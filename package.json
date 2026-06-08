@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:migrate": "node --env-file=.env.local scripts/apply-migrations.mjs",
+    "db:studio": "drizzle-kit studio",
+    "sync": "node --env-file=.env.local --import tsx scripts/sync.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

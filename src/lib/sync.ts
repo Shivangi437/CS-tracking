@@ -78,16 +78,32 @@ export async function runSync(): Promise<SyncResult> {
         if (ra) affected.add(toIstDate(ra));
       }
 
-      // Fetch conversations in parallel (capped).
+      // Fetch conversations in parallel (capped). Per-ticket try/catch so
+      // one transient Freshdesk hiccup doesn't poison the whole sync.
       const replyCounts = await Promise.all(
         keep.map((t) =>
           limiter(async () => {
-            const convs = await listConversations(t.id);
-            return upsertRepliesForTicket(t.id, convs, aiIds);
+            try {
+              const convs = await listConversations(t.id);
+              return await upsertRepliesForTicket(t.id, convs, aiIds);
+            } catch (err) {
+              console.error(
+                `[sync] ticket ${t.id} conversation fetch failed:`,
+                err instanceof Error ? err.message : err
+              );
+              return 0;
+            }
           })
         )
       );
       repliesUpserted += replyCounts.reduce((a, b) => a + b, 0);
+
+      // Persist partial progress so a crash mid-backfill still leaves an
+      // honest count in sync_log.
+      await db
+        .update(syncLog)
+        .set({ ticketsSynced })
+        .where(sql`${syncLog.id} = ${syncLogId}`);
     }
 
     // Watermark for the *next* run = this sync's start time (safe overlap;
