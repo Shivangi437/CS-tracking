@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -18,8 +19,14 @@ export interface WeekChartDatum {
 }
 
 export function WeekChart({ data }: { data: WeekChartDatum[] }) {
+  // Defer chart render until after mount so ResponsiveContainer has a real
+  // parent dimension (avoids "width(-1) height(-1)" SSR warnings).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   return (
     <div className="h-72 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
+      {mounted ? (
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 16, bottom: 24, left: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -55,6 +62,7 @@ export function WeekChart({ data }: { data: WeekChartDatum[] }) {
           />
         </BarChart>
       </ResponsiveContainer>
+      ) : null}
     </div>
   );
 }

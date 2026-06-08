@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -20,8 +21,12 @@ export interface AgentSeriesPoint {
 }
 
 export function AgentSeriesChart({ data }: { data: AgentSeriesPoint[] }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   return (
     <div className="h-72 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] p-3">
+      {mounted ? (
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 8, right: 16, bottom: 24, left: 8 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -75,6 +80,7 @@ export function AgentSeriesChart({ data }: { data: AgentSeriesPoint[] }) {
           />
         </LineChart>
       </ResponsiveContainer>
+      ) : null}
     </div>
   );
 }
