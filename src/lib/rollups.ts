@@ -237,9 +237,20 @@ function scoreAgents(
  * For every resolved ticket with IST(resolved_at) in the affected dates,
  * stamp tickets.resolution_class as 'handled' or 'passthrough' based on
  * whether the responder posted a human reply on that ticket.
+ *
+ * Implementation note: Drizzle expands array params into N placeholders, so
+ * `ANY($1, $2, ...)::date[]` won't parse. We compress the affected dates
+ * into min/max + an IN list of literal yyyy-MM-dd strings (validated below)
+ * so the SQL stays a single safe statement.
  */
 async function stampResolutionClass(istDates: string[]): Promise<void> {
   const tz = TIMEZONE;
+  // Validate every date is a yyyy-MM-dd string before splicing.
+  const safe = istDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+  if (safe.length === 0) return;
+  const min = safe.reduce((a, b) => (a < b ? a : b));
+  const max = safe.reduce((a, b) => (a > b ? a : b));
+
   await db.execute(sql`
     UPDATE tickets t
     SET resolution_class = CASE
@@ -254,6 +265,6 @@ async function stampResolutionClass(istDates: string[]): Promise<void> {
     END
     WHERE t.resolved_at IS NOT NULL
       AND t.responder_id IS NOT NULL
-      AND ((t.resolved_at AT TIME ZONE ${tz})::date) = ANY(${istDates}::date[])
+      AND ((t.resolved_at AT TIME ZONE ${tz})::date) BETWEEN ${min}::date AND ${max}::date
   `);
 }
