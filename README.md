@@ -111,9 +111,33 @@ Create an Incoming Webhook for the channel that should receive summaries; set
 `SLACK_WEBHOOK_URL`.
 
 ### 6. Auth secrets
-- `DASHBOARD_PASSWORD` — shared password for the team
+- `DASHBOARD_PASSWORD` — shared password for the team. The dashboard sets a
+  signed session cookie (HMAC-SHA256 of the password) on login, valid for 30
+  days. `src/proxy.ts` (Next 16's renamed middleware) gates every page on
+  this cookie and redirects unauthenticated requests to `/login`.
 - `CRON_SECRET` — random string; cron endpoints require
-  `Authorization: Bearer $CRON_SECRET`
+  `Authorization: Bearer $CRON_SECRET`. The proxy bypasses `/api/cron/*` so
+  Vercel Cron can hit them without a session cookie.
+
+Generate fresh values with:
+
+```bash
+openssl rand -base64 18      # DASHBOARD_PASSWORD
+openssl rand -hex 32         # CRON_SECRET
+```
+
+### Initial 30-day backfill
+
+The first sync pulls every ticket updated in the last 30 days plus its
+conversations — can run 10+ minutes. Vercel HTTP requests time out before
+that, so run it locally via the CLI helper after `db:migrate` completes:
+
+```bash
+npm run sync
+```
+
+Subsequent 30-min cron syncs only fetch what changed in the last interval and
+finish in well under 60 s.
 
 ## Vercel deployment
 
@@ -121,6 +145,18 @@ Create an Incoming Webhook for the channel that should receive summaries; set
 vercel link
 vercel env pull .env.local      # if you've set envs in the Vercel UI
 vercel --prod
+```
+
+Push all env vars from `.env.local` into the project before deploying:
+
+```bash
+# one-time
+for k in FRESHDESK_DOMAIN FRESHDESK_API_KEY AI_AGENT_IDS RAMA_AGENT_ID \
+         DATABASE_URL RESEND_API_KEY SUMMARY_EMAIL_FROM SUMMARY_EMAIL_TO \
+         SLACK_WEBHOOK_URL DASHBOARD_PASSWORD CRON_SECRET; do
+  v=$(grep "^$k=" .env.local | cut -d= -f2-)
+  [ -n "$v" ] && echo "$v" | vercel env add "$k" production
+done
 ```
 
 ### Cron schedule (UTC; IST = UTC+5:30)
@@ -131,7 +167,8 @@ vercel --prod
 | Daily summary   | `30 12 * * *`      | 18:00 IST                            |
 | Weekly summary  | `30 12 * * 5`      | 18:00 IST on Fridays                 |
 
-Configured in `vercel.json` (added in M7).
+Configured in [`vercel.json`](vercel.json). Vercel Cron requests automatically
+include `Authorization: Bearer ${CRON_SECRET}` once the env var is set.
 
 ### Hobby plan fallback
 
@@ -148,24 +185,86 @@ Options (pick one):
 - **cron-job.org** — free, per-URL HTTP cron, supports custom headers.
 - **Upstash QStash** — generous free tier, retries built in.
 - **GitHub Actions cron** — `.github/workflows/sync.yml` with `schedule:` + a
-  `curl` step using a repo secret for the bearer token.
+  `curl` step using a repo secret for the bearer token. Sample:
+
+  ```yaml
+  on:
+    schedule:
+      - cron: "*/30 4-13 * * *"   # sync
+      - cron: "30 12 * * *"        # daily summary
+      - cron: "30 12 * * 5"        # weekly summary
+  jobs:
+    poke:
+      runs-on: ubuntu-latest
+      steps:
+        - run: |
+            case "$GITHUB_EVENT_NAME-$GITHUB_EVENT_PATH" in
+              *) path=sync;;
+            esac
+            curl -fsS -X POST "https://$DEPLOY/api/cron/$path" \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          env:
+            DEPLOY: ${{ vars.DEPLOY_HOST }}
+  ```
+
+### Manual triggers
+
+Both summary endpoints accept `?force=true` to re-send the email + Slack even
+when the day's row already exists (useful for testing):
+
+```bash
+curl -X POST "https://<deployment>/api/cron/daily-summary?force=true" \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
 
 ## Project layout
 
 ```
 src/
-  app/                Next.js App Router pages + API routes
+  app/
+    today/, week/, agents/, agents/[id]/, summaries/   Dashboard pages
+    login/                                             Password gate
+    api/
+      auth/login/, auth/logout/                        Session endpoints
+      cron/sync/, cron/daily-summary/, cron/weekly-summary/   Bearer-auth'd jobs
   lib/
-    config.ts         Score weights + tunable thresholds (single source of truth)
+    config.ts         Score weights + attention thresholds (single source of truth)
     env.ts            Centralised env reader (always .trim())
+    dates.ts          IST date helpers (today, week range, IST shift)
     db/
       schema.ts       Drizzle schema
-      client.ts       Neon HTTP driver + Drizzle client
+      client.ts       Neon HTTP driver + Drizzle client (lazy)
+    freshdesk.ts      Typed REST client + 429 backoff + Link-header pagination
+    sync.ts           Sync orchestrator (idempotent upserts, watermark, partial progress)
+    rollups.ts        agent_daily_stats recompute + tickets.resolution_class stamp
+    queries.ts        Read-only queries for the dashboard + summaries
+    attention.ts      Auto "needs attention" flag generation
+    email.ts          Resend HTML summary
+    slack.ts          Slack Block Kit summary
+    summary.ts        Orchestrates sync → compute → upsert summaries → send
+    session.ts        HMAC session-cookie helpers (shared by proxy + login)
+    actions.ts        Server actions (e.g. triggerSyncAction for the dashboard)
+  components/
+    Leaderboard.tsx, TopPerformerCard.tsx, StatCard.tsx,
+    RunSyncButton.tsx, SyncBadge.tsx,
+    WeekChart.tsx, AgentSeriesChart.tsx        (Recharts; client components)
+  proxy.ts            Next 16 proxy (was middleware) — password gate
+scripts/
+  apply-migrations.mjs   Non-interactive migration applier (npm run db:migrate)
+  sync.ts                CLI sync — use for the initial 30-day backfill (npm run sync)
 drizzle/              Generated SQL migrations (git-tracked)
 drizzle.config.ts     Drizzle Kit config
-vercel.json           Cron schedule (added in M7)
+vercel.json           Cron schedule
 ```
 
 ## Status
 
-Built milestone-by-milestone. See commit log.
+Built milestone-by-milestone:
+
+- **M1** Scaffold + schema
+- **M2** Freshdesk client + sync route
+- **M3** agent_daily_stats rollup + composite score
+- **M4** Today view + leaderboard + top performer
+- **M5** Week view + agent detail + summaries archive
+- **M6** Daily + weekly summary jobs (Resend + Slack)
+- **M7** Password gate + vercel.json crons + this README
