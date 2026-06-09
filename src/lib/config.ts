@@ -40,3 +40,17 @@ export const ATTENTION_THRESHOLDS = {
   /** Minimum assigned in the period to even evaluate the above. */
   minAssignedForFlags: 5,
 } as const;
+
+/**
+ * Escalations watchlist + backlog thresholds. Mirrors the discipline of
+ * the Freshdesk attention thresholds but for the reputation surface.
+ *
+ * Important: escalations are visibility data in this task — these
+ * thresholds drive flagging, not scoring.
+ */
+export const ESCALATION_THRESHOLDS = {
+  /** Public + unactioned beyond this many hours → reputation watchlist. */
+  publicAgingHours: 24,
+  /** Per-agent open + in-progress backlog above this → flag. */
+  highOpenBacklog: 8,
+} as const;

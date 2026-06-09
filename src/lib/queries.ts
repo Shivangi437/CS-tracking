@@ -3,11 +3,12 @@
  * summary jobs both call these — never Freshdesk on page load.
  */
 
-import { sql, desc, eq, and, gte, lte, isNotNull } from "drizzle-orm";
+import { sql, desc, eq, and, gte, lte, isNotNull, asc } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   agentDailyStats,
   agents,
+  escalations,
   syncLog,
   tickets,
 } from "@/lib/db/schema";
@@ -250,4 +251,231 @@ export async function getResolutionSplit(
     else unclassified += r.n;
   }
   return { handled, passthrough, unclassified };
+}
+
+// ---------- Escalations ----------
+
+/**
+ * Per-agent escalation load, matched by display name (the leaderboard's
+ * cleaned name). Pure visibility — never folded into the Score in this task.
+ */
+export interface EscalationLoad {
+  resolvedReal: number;
+  inProgress: number;
+  touchesOnly: number;
+}
+
+export async function getEscalationLoadForAgentName(
+  name: string
+): Promise<EscalationLoad> {
+  if (!name.trim()) {
+    return { resolvedReal: 0, inProgress: 0, touchesOnly: 0 };
+  }
+  const r = await db
+    .select({
+      cls: escalations.creditClass,
+      status: escalations.status,
+      n: sql<number>`COUNT(*)::int`,
+    })
+    .from(escalations)
+    .where(sql`LOWER(${escalations.agent}) = LOWER(${name.trim()})`)
+    .groupBy(escalations.creditClass, escalations.status);
+
+  let resolvedReal = 0;
+  let inProgress = 0;
+  let touchesOnly = 0;
+  for (const row of r) {
+    if (row.cls === "merit" && row.status === "resolved") resolvedReal += row.n;
+    else if (row.cls === "merit" && row.status === "in_progress")
+      inProgress += row.n;
+    else touchesOnly += row.n;
+  }
+  return { resolvedReal, inProgress, touchesOnly };
+}
+
+export interface EscalationRow {
+  id: number;
+  openedAt: string | null;
+  acknowledgedAt: Date | null;
+  resolvedAt: Date | null;
+  channel: string;
+  medium: string | null;
+  isPublic: boolean;
+  authorName: string | null;
+  authorEmail: string | null;
+  handle: string | null;
+  freshdeskTicket: string | null;
+  issueText: string | null;
+  category: string | null;
+  status: string;
+  creditClass: string;
+  escalationType: string;
+  legalThreat: boolean;
+  needsAttention: boolean;
+  closureConfirmed: boolean;
+  remediation: string | null;
+  agent: string | null;
+  notes: string | null;
+}
+
+/**
+ * Reputation watchlist: public-facing rows that are still open or just logged,
+ * legal threats sorted to the top. The team uses this as the "what's about to
+ * embarrass us" view.
+ */
+export async function getEscalationWatchlist(limit = 50): Promise<EscalationRow[]> {
+  return db
+    .select({
+      id: escalations.id,
+      openedAt: escalations.openedAt,
+      acknowledgedAt: escalations.acknowledgedAt,
+      resolvedAt: escalations.resolvedAt,
+      channel: escalations.channel,
+      medium: escalations.medium,
+      isPublic: escalations.isPublic,
+      authorName: escalations.authorName,
+      authorEmail: escalations.authorEmail,
+      handle: escalations.handle,
+      freshdeskTicket: escalations.freshdeskTicket,
+      issueText: escalations.issueText,
+      category: escalations.category,
+      status: escalations.status,
+      creditClass: escalations.creditClass,
+      escalationType: escalations.escalationType,
+      legalThreat: escalations.legalThreat,
+      needsAttention: escalations.needsAttention,
+      closureConfirmed: escalations.closureConfirmed,
+      remediation: escalations.remediation,
+      agent: escalations.agent,
+      notes: escalations.notes,
+    })
+    .from(escalations)
+    .where(
+      and(
+        eq(escalations.isPublic, true),
+        sql`${escalations.status} IN ('open_unactioned','in_progress','unlogged')`
+      )
+    )
+    .orderBy(
+      desc(escalations.legalThreat),
+      sql`${escalations.openedAt} NULLS FIRST`
+    )
+    .limit(limit);
+}
+
+export interface ListEscalationsFilters {
+  channel?: string;
+  status?: string;
+  agent?: string;
+  isPublic?: boolean;
+  needsAttention?: boolean;
+}
+
+/**
+ * Filterable escalations list — newest first. Empty filters = everything.
+ */
+export async function listEscalations(
+  filters: ListEscalationsFilters = {},
+  limit = 500
+): Promise<EscalationRow[]> {
+  const conds = [] as ReturnType<typeof eq>[];
+  if (filters.channel) conds.push(eq(escalations.channel, filters.channel));
+  if (filters.status) conds.push(eq(escalations.status, filters.status));
+  if (filters.agent)
+    conds.push(sql`LOWER(${escalations.agent}) = LOWER(${filters.agent})` as ReturnType<typeof eq>);
+  if (filters.isPublic !== undefined)
+    conds.push(eq(escalations.isPublic, filters.isPublic));
+  if (filters.needsAttention !== undefined)
+    conds.push(eq(escalations.needsAttention, filters.needsAttention));
+
+  return db
+    .select({
+      id: escalations.id,
+      openedAt: escalations.openedAt,
+      acknowledgedAt: escalations.acknowledgedAt,
+      resolvedAt: escalations.resolvedAt,
+      channel: escalations.channel,
+      medium: escalations.medium,
+      isPublic: escalations.isPublic,
+      authorName: escalations.authorName,
+      authorEmail: escalations.authorEmail,
+      handle: escalations.handle,
+      freshdeskTicket: escalations.freshdeskTicket,
+      issueText: escalations.issueText,
+      category: escalations.category,
+      status: escalations.status,
+      creditClass: escalations.creditClass,
+      escalationType: escalations.escalationType,
+      legalThreat: escalations.legalThreat,
+      needsAttention: escalations.needsAttention,
+      closureConfirmed: escalations.closureConfirmed,
+      remediation: escalations.remediation,
+      agent: escalations.agent,
+      notes: escalations.notes,
+    })
+    .from(escalations)
+    .where(conds.length ? and(...conds) : sql`TRUE`)
+    .orderBy(sql`${escalations.openedAt} DESC NULLS LAST`, desc(escalations.id))
+    .limit(limit);
+}
+
+export interface EscalationOverview {
+  total: number;
+  needsAttention: number;
+  publicOpen: number;
+  legalThreats: number;
+  distinctAgents: { agent: string; n: number }[];
+  channelBreakdown: { channel: string; n: number }[];
+}
+
+export async function getEscalationOverview(): Promise<EscalationOverview> {
+  const [counts, byAgent, byChannel] = await Promise.all([
+    db
+      .select({
+        total: sql<number>`COUNT(*)::int`,
+        needsAttention: sql<number>`SUM(CASE WHEN ${escalations.needsAttention} THEN 1 ELSE 0 END)::int`,
+        publicOpen: sql<number>`SUM(CASE WHEN ${escalations.isPublic} AND ${escalations.status} IN ('open_unactioned','in_progress','unlogged') THEN 1 ELSE 0 END)::int`,
+        legalThreats: sql<number>`SUM(CASE WHEN ${escalations.legalThreat} THEN 1 ELSE 0 END)::int`,
+      })
+      .from(escalations),
+    db
+      .select({
+        agent: escalations.agent,
+        n: sql<number>`COUNT(*)::int`,
+      })
+      .from(escalations)
+      .where(isNotNull(escalations.agent))
+      .groupBy(escalations.agent)
+      .orderBy(desc(sql`COUNT(*)`))
+      .limit(20),
+    db
+      .select({
+        channel: escalations.channel,
+        n: sql<number>`COUNT(*)::int`,
+      })
+      .from(escalations)
+      .groupBy(escalations.channel)
+      .orderBy(desc(sql`COUNT(*)`)),
+  ]);
+
+  return {
+    total: counts[0]?.total ?? 0,
+    needsAttention: counts[0]?.needsAttention ?? 0,
+    publicOpen: counts[0]?.publicOpen ?? 0,
+    legalThreats: counts[0]?.legalThreats ?? 0,
+    distinctAgents: byAgent
+      .filter((r): r is { agent: string; n: number } => r.agent != null)
+      .map((r) => ({ agent: r.agent, n: r.n })),
+    channelBreakdown: byChannel.map((r) => ({ channel: r.channel, n: r.n })),
+  };
+}
+
+/** Distinct agents that ever appear in escalations — for filter dropdowns. */
+export async function listEscalationAgents(): Promise<string[]> {
+  const r = await db
+    .selectDistinct({ agent: escalations.agent })
+    .from(escalations)
+    .where(isNotNull(escalations.agent))
+    .orderBy(asc(escalations.agent));
+  return r.map((x) => x.agent!).filter(Boolean);
 }

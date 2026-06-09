@@ -11,7 +11,8 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "node --env-file=.env.local scripts/apply-migrations.mjs",
     "db:studio": "drizzle-kit studio",
-    "sync": "node --env-file=.env.local --import tsx scripts/sync.ts"
+    "sync": "node --env-file=.env.local --import tsx scripts/sync.ts",
+    "import:escalations": "node --env-file=.env.local --import tsx scripts/import-escalations.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

@@ -5,6 +5,7 @@ import { tickets } from "@/lib/db/schema";
 import {
   getAgentById,
   getAgentDailySeries,
+  getEscalationLoadForAgentName,
   getPeriodReport,
 } from "@/lib/queries";
 import { istToday, istShiftDays } from "@/lib/dates";
@@ -29,14 +30,16 @@ export default async function AgentDetailPage({ params }: PageProps) {
   const start = istShiftDays(today, -29); // last 30 days inclusive
   const end = today;
 
-  const [series, periodReport, reopens] = await Promise.all([
+  const name = agent.name.split("||")[0].trim() || agent.name;
+
+  const [series, periodReport, reopens, escalationLoad] = await Promise.all([
     getAgentDailySeries(agentId, start, end),
     getPeriodReport(start, end),
     countReopens(agentId, start, end),
+    getEscalationLoadForAgentName(name),
   ]);
 
   const me = periodReport.rows.find((r) => r.agentId === agentId);
-  const name = agent.name.split("||")[0].trim() || agent.name;
 
   const handledRatio =
     me && me.resolved > 0 ? Math.round((me.handled / me.resolved) * 100) : null;
@@ -76,6 +79,36 @@ export default async function AgentDetailPage({ params }: PageProps) {
           Daily activity
         </h2>
         <AgentSeriesChart data={series} />
+      </div>
+
+      {/* Escalation load — visibility only, NEVER folded into the Freshdesk score. */}
+      <div>
+        <div className="mb-2 flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Escalations · all-time
+          </h2>
+          <span className="text-[11px] text-[var(--subtle)]">
+            Visibility only — not part of the Freshdesk score.
+          </span>
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <StatCard
+            label="Resolved (real)"
+            value={escalationLoad.resolvedReal}
+            tone="good"
+            sub="merit · closed"
+          />
+          <StatCard
+            label="In progress"
+            value={escalationLoad.inProgress}
+            sub="merit · active"
+          />
+          <StatCard
+            label="Touches only"
+            value={escalationLoad.touchesOnly}
+            sub="visibility — pile-ons, unactioned, etc."
+          />
+        </div>
       </div>
     </div>
   );

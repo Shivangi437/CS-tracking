@@ -25,6 +25,7 @@ const NAV = [
   { href: "/week", label: "Week" },
   { href: "/month", label: "Month" },
   { href: "/agents", label: "Executives" },
+  { href: "/escalations", label: "Escalations" },
   { href: "/summaries", label: "Summaries" },
 ];
 

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   bigint,
@@ -12,6 +13,7 @@ import {
   uniqueIndex,
   index,
   serial,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 export const agents = pgTable("agents", {
@@ -117,6 +119,97 @@ export const summaries = pgTable(
       t.periodStart,
       t.periodEnd
     ),
+  ]
+);
+
+/**
+ * Escalations: work that arrives *outside* Freshdesk — LinkedIn, Instagram,
+ * Quora, Trustpilot, MouthShut, Google reviews, personal email. Surfaces
+ * load that's currently invisible. Per spec: never folds into the Score in
+ * this task; lives alongside the Freshdesk numbers as visibility data.
+ *
+ * Merit-vs-visibility discipline mirrors the Freshdesk handled/passthrough
+ * split: a `creditClass='merit'` row counts as real resolution work,
+ * `'visibility'` is touches-only.
+ *
+ * `parentId` groups pile-on comments under their source post so a viral
+ * thread doesn't inflate any one agent's numbers.
+ */
+export const escalations = pgTable(
+  "escalations",
+  {
+    id: serial("id").primaryKey(),
+    openedAt: date("opened_at"),
+    acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    /** LinkedIn|Instagram|Quora|Trustpilot|MouthShut|Google|Email|Helpdesk */
+    channel: text("channel").notNull(),
+    /** post|comment|reel|story|dm|email */
+    medium: text("medium"),
+    /** Reputation-facing surface (Quora/Trustpilot/post/comment) vs private (dm/email). */
+    isPublic: boolean("is_public").notNull().default(false),
+    authorName: text("author_name"),
+    /** Join key back to Freshdesk requester. Always stored lowercased + trimmed. */
+    authorEmail: text("author_email"),
+    authorEmailAlt: text("author_email_alt"),
+    /** Social handle when there's no email. */
+    handle: text("handle"),
+    /** Bridge to the main tracker. */
+    freshdeskTicket: text("freshdesk_ticket"),
+    issueText: text("issue_text"),
+    /**
+     * author_copies_delivery|publication_delay|listing_error|royalties_reporting
+     * |refund_request|delisting|quality_defect|award_certificate|no_human_comms
+     * |reputation_pileon|other
+     */
+    category: text("category"),
+    /**
+     * resolved|in_progress|open_unactioned|unlogged|author_unresponsive
+     * |author_declined
+     */
+    status: text("status").notNull().default("unlogged"),
+    /** merit|visibility — derived server-side from status + escalationType. */
+    creditClass: text("credit_class").notNull().default("visibility"),
+    /** individual|pileon_comment */
+    escalationType: text("escalation_type").notNull().default("individual"),
+    /** Groups pile-on comments under their source post. */
+    parentId: integer("parent_id").references((): AnyPgColumn => escalations.id),
+    legalThreat: boolean("legal_threat").notNull().default(false),
+    needsAttention: boolean("needs_attention").notNull().default(false),
+    closureConfirmed: boolean("closure_confirmed").notNull().default(false),
+    /** Goodwill given away: PR Article|Author Copies|Award|... */
+    remediation: text("remediation"),
+    /** Credited executive (display name; freeform for manual entry). */
+    agent: text("agent"),
+    /** Manager sign-off (Rama) — guards against self-inflated logs. */
+    verifiedBy: text("verified_by"),
+    notes: text("notes"),
+    /**
+     * Tooling column for idempotent CSV import. SHA-256 of the canonical
+     * source row; unique so re-running the importer never duplicates.
+     * Null for manually-entered rows.
+     */
+    importHash: text("import_hash"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // TODO: future Freshdesk-mailbox routing plug-in lands here — once the
+    // email channel feeds into Freshdesk we can drop a freshdesk_conversation_id
+    // foreign key and stop logging email escalations by hand.
+  },
+  (t) => [
+    index("escalations_author_email_idx").on(t.authorEmail),
+    index("escalations_agent_idx").on(t.agent),
+    index("escalations_opened_at_idx").on(t.openedAt),
+    // Partial index: only rows actually surfacing publicly. Watchlist hits this.
+    index("escalations_public_open_idx")
+      .on(t.openedAt)
+      .where(sql`is_public = true`),
+    index("escalations_freshdesk_ticket_idx").on(t.freshdeskTicket),
+    uniqueIndex("escalations_import_hash_idx").on(t.importHash),
   ]
 );
 
