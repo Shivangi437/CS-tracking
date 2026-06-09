@@ -1,0 +1,53 @@
+name: Freshdesk sync
+
+# Vercel Hobby caps crons at once-per-day, so this workflow drives the
+# 30-min /api/cron/sync endpoint on production from GitHub Actions instead.
+#
+# Required repo secret:
+#   CRON_SECRET — matches the CRON_SECRET env var on the Vercel deployment.
+#
+# Optional repo variable (Settings → Secrets and variables → Actions → Variables):
+#   DEPLOY_HOST — production hostname without scheme. Defaults to the alias
+#                 below if unset.
+
+on:
+  schedule:
+    # Every 30 minutes between 04:00–13:00 UTC = 09:30–18:30 IST.
+    # GitHub uses UTC; covers BookLeaf CS work hours plus a small buffer.
+    - cron: "*/30 4-13 * * *"
+  # Manual trigger from the Actions tab — useful for the first run and ad-hoc.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Don't pile up runs if one is slow; skip the new one if a sync is mid-flight.
+concurrency:
+  group: freshdesk-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: POST /api/cron/sync
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST || 'support-performance-tracker.vercel.app' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET secret is not set on this repo."
+            exit 1
+          fi
+          # Vercel function maxDuration is 60s — incremental syncs (~30 min
+          # of new tickets) finish in well under that. -fsS = fail on HTTP
+          # errors but stay quiet on success; --max-time guards against the
+          # endpoint hanging.
+          curl -fsS --max-time 120 \
+            -X POST "https://$DEPLOY_HOST/api/cron/sync" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+          | tee /tmp/sync.json
+          jq -e '.ok == true' /tmp/sync.json
+          echo "tickets synced: $(jq -r '.ticketsSynced' /tmp/sync.json)"
