@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { AutoSync } from "@/components/AutoSync";
+import { getLastSyncedAt } from "@/lib/queries";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -21,13 +23,17 @@ export const metadata: Metadata = {
 const NAV = [
   { href: "/today", label: "Today" },
   { href: "/week", label: "Week" },
+  { href: "/month", label: "Month" },
   { href: "/agents", label: "Executives" },
   { href: "/summaries", label: "Summaries" },
 ];
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
+  // Read once on the server so AutoSync can decide whether the dashboard's
+  // numbers are stale enough to trigger a background sync.
+  const lastSyncedAt = await getLastSyncedAt().catch(() => null);
   return (
     <html
       lang="en"
@@ -63,6 +69,9 @@ export default function RootLayout({
         <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">
           {children}
         </main>
+        <AutoSync
+          lastSyncedAt={lastSyncedAt ? lastSyncedAt.toISOString() : null}
+        />
       </body>
     </html>
   );

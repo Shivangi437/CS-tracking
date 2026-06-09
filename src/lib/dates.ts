@@ -54,3 +54,29 @@ export function istWeekRange(date: string): { start: string; end: string } {
   const end = istShiftDays(start, 6);
   return { start, end };
 }
+
+/**
+ * Returns the calendar IST month containing `date`, as
+ * { start: 'yyyy-MM-01', end: 'yyyy-MM-DD' } where end is the last day of
+ * that month. Use Math.min with `today` if you want month-to-date.
+ */
+export function istMonthRange(date: string): { start: string; end: string } {
+  const [y, m] = date.split("-").map(Number);
+  const start = `${y}-${String(m).padStart(2, "0")}-01`;
+  // Day 0 of next month = last day of this month.
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const end = `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+  return { start, end };
+}
+
+/**
+ * Month-to-date IST range: first of the IST month containing `date`
+ * → `date` (capped at today so we don't show future days).
+ */
+export function istMonthToDateRange(date: string): {
+  start: string;
+  end: string;
+} {
+  const { start } = istMonthRange(date);
+  return { start, end: date };
+}
