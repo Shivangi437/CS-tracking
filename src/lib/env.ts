@@ -79,10 +79,7 @@ export const env = {
     return read("SLACK_WEBHOOK_URL", false);
   },
 
-  // Auth
-  get DASHBOARD_PASSWORD() {
-    return read("DASHBOARD_PASSWORD");
-  },
+  // Cron auth (still required — Vercel Cron + GitHub Actions send this header)
   get CRON_SECRET() {
     return read("CRON_SECRET");
   },

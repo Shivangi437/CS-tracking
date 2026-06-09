@@ -55,17 +55,9 @@ export default function RootLayout({
                 ))}
               </nav>
             </div>
-            <div className="flex items-center gap-3 text-xs text-[var(--subtle)]">
-              <span>BookLeaf · IST</span>
-              <form action="/api/auth/logout" method="POST">
-                <button
-                  type="submit"
-                  className="rounded px-2 py-0.5 hover:bg-[var(--background)] hover:text-[var(--foreground)]"
-                >
-                  Sign out
-                </button>
-              </form>
-            </div>
+            <span className="text-xs text-[var(--subtle)]">
+              BookLeaf · IST
+            </span>
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl flex-1 px-6 py-6">

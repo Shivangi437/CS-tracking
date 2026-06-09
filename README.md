@@ -110,21 +110,21 @@ Verify your sending domain at resend.com, generate an API key, then set:
 Create an Incoming Webhook for the channel that should receive summaries; set
 `SLACK_WEBHOOK_URL`.
 
-### 6. Auth secrets
-- `DASHBOARD_PASSWORD` — shared password for the team. The dashboard sets a
-  signed session cookie (HMAC-SHA256 of the password) on login, valid for 30
-  days. `src/proxy.ts` (Next 16's renamed middleware) gates every page on
-  this cookie and redirects unauthenticated requests to `/login`.
+### 6. Cron secret
 - `CRON_SECRET` — random string; cron endpoints require
-  `Authorization: Bearer $CRON_SECRET`. The proxy bypasses `/api/cron/*` so
-  Vercel Cron can hit them without a session cookie.
-
-Generate fresh values with:
+  `Authorization: Bearer $CRON_SECRET`. Vercel Cron and the GitHub Actions
+  sync workflow both send this header.
 
 ```bash
-openssl rand -base64 18      # DASHBOARD_PASSWORD
 openssl rand -hex 32         # CRON_SECRET
 ```
+
+### Dashboard access
+
+The dashboard is open access — anyone with the URL can view it. This is an
+internal team tool; share the URL only in private channels. To restrict
+access later, see commit history: revert `feat: remove auth gate` to get
+the shared-password gate back, or add per-user auth with Clerk/Auth0/etc.
 
 ### Initial 30-day backfill
 
@@ -153,7 +153,7 @@ Push all env vars from `.env.local` into the project before deploying:
 # one-time
 for k in FRESHDESK_DOMAIN FRESHDESK_API_KEY AI_AGENT_IDS RAMA_AGENT_ID \
          DATABASE_URL RESEND_API_KEY SUMMARY_EMAIL_FROM SUMMARY_EMAIL_TO \
-         SLACK_WEBHOOK_URL DASHBOARD_PASSWORD CRON_SECRET; do
+         SLACK_WEBHOOK_URL CRON_SECRET; do
   v=$(grep "^$k=" .env.local | cut -d= -f2-)
   [ -n "$v" ] && echo "$v" | vercel env add "$k" production
 done
