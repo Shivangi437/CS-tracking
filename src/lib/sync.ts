@@ -61,6 +61,7 @@ export async function runSync(): Promise<SyncResult> {
 
     let ticketsSynced = 0;
     let repliesUpserted = 0;
+    let pageMaxUpdatedAt: Date | null = null;
     const limiter = pLimit(FRESHDESK_CONCURRENCY);
 
     for await (const page of iterateTicketsUpdatedSince(watermarkFrom)) {
@@ -69,6 +70,15 @@ export async function runSync(): Promise<SyncResult> {
 
       await upsertTickets(keep);
       ticketsSynced += keep.length;
+
+      // Advance the per-page watermark as we go. If the function is killed
+      // mid-sync (e.g. Vercel 60s timeout), the next invocation resumes
+      // from here instead of re-fetching the same window forever.
+      const pageMaxRaw = keep.reduce(
+        (acc, t) => (acc > t.updated_at ? acc : t.updated_at),
+        keep[0].updated_at
+      );
+      pageMaxUpdatedAt = new Date(pageMaxRaw);
 
       // Track affected IST dates for the rollup step.
       for (const t of keep) {
@@ -98,11 +108,12 @@ export async function runSync(): Promise<SyncResult> {
       );
       repliesUpserted += replyCounts.reduce((a, b) => a + b, 0);
 
-      // Persist partial progress so a crash mid-backfill still leaves an
-      // honest count in sync_log.
+      // Persist partial progress + advancing watermark so a crash mid-
+      // backfill still leaves an honest count in sync_log AND the next
+      // sync resumes from where this one stopped (see resolveWatermark).
       await db
         .update(syncLog)
-        .set({ ticketsSynced })
+        .set({ ticketsSynced, watermark: pageMaxUpdatedAt })
         .where(sql`${syncLog.id} = ${syncLogId}`);
     }
 
@@ -148,11 +159,25 @@ export async function runSync(): Promise<SyncResult> {
   }
 }
 
+/**
+ * Resolve the starting point for this sync. Strategy:
+ *
+ *  1. Take the most recent watermark across ALL sync rows (success or
+ *     failure). Since we now advance the watermark per page during the run,
+ *     a killed-mid-sync row's watermark still represents real progress —
+ *     resuming from it is correct and avoids re-fetching the same window.
+ *  2. If nothing has ever recorded a watermark, fall back to a 30-day
+ *     backfill window.
+ *
+ * Pre-fix history: we only honoured 'success' rows, so a string of timed-out
+ * 'failure' rows blocked the watermark from advancing at all and we'd
+ * happily re-do the same too-large window every time.
+ */
 async function resolveWatermark(): Promise<Date> {
   const last = await db
     .select({ watermark: syncLog.watermark })
     .from(syncLog)
-    .where(sql`${syncLog.status} = 'success' AND ${syncLog.watermark} IS NOT NULL`)
+    .where(sql`${syncLog.watermark} IS NOT NULL`)
     .orderBy(sql`${syncLog.watermark} DESC`)
     .limit(1);
 
