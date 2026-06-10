@@ -9,14 +9,21 @@ name: Freshdesk sync
 # Optional repo variable (Settings → Secrets and variables → Actions → Variables):
 #   DEPLOY_HOST — production hostname without scheme. Defaults to the alias
 #                 below if unset.
+#
+# v2 — bumped 2026-06-10 to force schedule re-registration after a 24h gap.
 
 on:
   schedule:
-    # Every 30 minutes between 04:00–13:00 UTC = 09:30–18:30 IST.
-    # GitHub uses UTC; covers BookLeaf CS work hours plus a small buffer.
+    # Every 30 minutes between 04:00–13:30 UTC = 09:30–19:00 IST.
+    # GitHub Actions can delay schedule fires by 10–30 min during peak load,
+    # so the range is set to comfortably cover BookLeaf CS work hours.
     - cron: "*/30 4-13 * * *"
-  # Manual trigger from the Actions tab — useful for the first run and ad-hoc.
+  # Manual trigger from the Actions tab — useful for smoke tests + first run.
   workflow_dispatch: {}
+  # Run on push to this workflow file so any change is automatically smoke-tested.
+  push:
+    paths:
+      - .github/workflows/sync.yml
 
 permissions:
   contents: read
@@ -36,18 +43,38 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST || 'support-performance-tracker.vercel.app' }}
         run: |
-          if [ -z "$CRON_SECRET" ]; then
-            echo "::error::CRON_SECRET secret is not set on this repo."
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET secret is not set on this repo. Add it at"
+            echo "::error::https://github.com/<owner>/<repo>/settings/secrets/actions"
             exit 1
           fi
-          # Vercel function maxDuration is 60s — incremental syncs (~30 min
-          # of new tickets) finish in well under that. -fsS = fail on HTTP
-          # errors but stay quiet on success; --max-time guards against the
-          # endpoint hanging.
-          curl -fsS --max-time 120 \
+          echo "Host: $DEPLOY_HOST"
+          # Vercel function maxDuration is 60s. The app now self-heals on
+          # timeout (resumable watermark + single-flight), so 90s here is more
+          # than enough for any individual incremental sync to return.
+          HTTP_CODE=$(curl -s -o /tmp/sync.json -w '%{http_code}' --max-time 90 \
             -X POST "https://$DEPLOY_HOST/api/cron/sync" \
             -H "Authorization: Bearer $CRON_SECRET" \
-            -H "Content-Type: application/json" \
-          | tee /tmp/sync.json
-          jq -e '.ok == true' /tmp/sync.json
-          echo "tickets synced: $(jq -r '.ticketsSynced' /tmp/sync.json)"
+            -H "Content-Type: application/json" || echo "000")
+          echo "HTTP $HTTP_CODE"
+          cat /tmp/sync.json || true
+          echo
+          # Accept 200 with ok:true OR ok:true+skipped:true (single-flight win).
+          if [ "$HTTP_CODE" = "200" ] && jq -e '.ok == true' /tmp/sync.json > /dev/null; then
+            if jq -e '.skipped == true' /tmp/sync.json > /dev/null; then
+              echo "Skipped — another sync was already in flight (normal)."
+            else
+              echo "Synced $(jq -r '.ticketsSynced' /tmp/sync.json) ticket(s) in $(jq -r '.durationMs' /tmp/sync.json)ms"
+            fi
+          else
+            echo "::error::Sync endpoint did not return ok=true (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+      - name: Health check
+        if: always()
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST || 'support-performance-tracker.vercel.app' }}
+        run: |
+          curl -s "https://$DEPLOY_HOST/api/health" | jq '.' || echo "health endpoint unreachable"
