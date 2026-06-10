@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { runSync } from "@/lib/sync";
+import { runSync, SyncBusyError } from "@/lib/sync";
 import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
@@ -23,6 +23,15 @@ async function handle(req: NextRequest) {
     const result = await runSync();
     return Response.json({ ok: true, ...result });
   } catch (err) {
+    if (err instanceof SyncBusyError) {
+      // Another sync was already in flight when this trigger fired (e.g.
+      // GH Actions + AutoSync overlapped). Not a failure — return 200.
+      return Response.json({
+        ok: true,
+        skipped: true,
+        message: err.message,
+      });
+    }
     const message = err instanceof Error ? err.message : String(err);
     return Response.json({ ok: false, error: message }, { status: 500 });
   }

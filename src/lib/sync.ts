@@ -44,8 +44,62 @@ export interface SyncResult {
   durationMs: number;
 }
 
+/**
+ * Thrown when a sync is short-circuited because another one is already
+ * in-flight. Callers can recognise this and treat it as a soft no-op.
+ */
+export class SyncBusyError extends Error {
+  constructor(public runningSyncId: number, public runningSinceSeconds: number) {
+    super(
+      `Another sync (#${runningSyncId}) started ${runningSinceSeconds}s ago — skipping.`
+    );
+    this.name = "SyncBusyError";
+  }
+}
+
+/** Maximum age (seconds) for a 'running' row before we sweep it as failure. */
+const STUCK_SYNC_AGE_SECONDS = 5 * 60; // 5 min
+/** If a 'running' row is younger than this, we consider another sync in flight. */
+const SINGLE_FLIGHT_AGE_SECONDS = 90;
+
 export async function runSync(): Promise<SyncResult> {
   const startedAt = new Date();
+
+  // ---- 1. Sweep stale running rows ----
+  // Vercel functions get killed at 60s. Any 'running' row older than that
+  // is almost certainly dead; left alone they pile up and pollute queries.
+  await db.execute(sql`
+    UPDATE sync_log
+    SET status = 'failure',
+        finished_at = NOW(),
+        error = COALESCE(error, '') ||
+                CASE WHEN COALESCE(error, '') = '' THEN '' ELSE ' · ' END ||
+                'stale running row swept on next sync start'
+    WHERE status = 'running'
+      AND started_at < NOW() - INTERVAL '${sql.raw(STUCK_SYNC_AGE_SECONDS.toString())} seconds'
+  `);
+
+  // ---- 2. Single-flight check ----
+  // If another sync started in the last SINGLE_FLIGHT_AGE_SECONDS, skip.
+  // Lets AutoSync from 10 teammates dispatch in parallel without firing 10
+  // concurrent syncs against Freshdesk.
+  const inFlight = await db
+    .select({
+      id: syncLog.id,
+      startedAt: syncLog.startedAt,
+    })
+    .from(syncLog)
+    .where(
+      sql`${syncLog.status} = 'running' AND ${syncLog.startedAt} > NOW() - INTERVAL '${sql.raw(SINGLE_FLIGHT_AGE_SECONDS.toString())} seconds'`
+    )
+    .limit(1);
+
+  if (inFlight.length > 0) {
+    const ageSec = Math.round(
+      (Date.now() - new Date(inFlight[0].startedAt).getTime()) / 1000
+    );
+    throw new SyncBusyError(inFlight[0].id, ageSec);
+  }
 
   const [{ id: syncLogId }] = await db
     .insert(syncLog)

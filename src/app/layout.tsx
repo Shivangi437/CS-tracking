@@ -3,7 +3,9 @@ import Link from "next/link";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AutoSync } from "@/components/AutoSync";
+import { HealthBanner } from "@/components/HealthBanner";
 import { getLastSyncedAt } from "@/lib/queries";
+import { getSyncHealth } from "@/lib/health";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -33,14 +35,19 @@ export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   // Read once on the server so AutoSync can decide whether the dashboard's
-  // numbers are stale enough to trigger a background sync.
-  const lastSyncedAt = await getLastSyncedAt().catch(() => null);
+  // numbers are stale enough to trigger a background sync. Health drives the
+  // top-of-page banner; both swallow errors so a DB hiccup never breaks the chrome.
+  const [lastSyncedAt, health] = await Promise.all([
+    getLastSyncedAt().catch(() => null),
+    getSyncHealth().catch((): null => null),
+  ]);
   return (
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        {health ? <HealthBanner health={health} /> : null}
         <header className="border-b border-[var(--border)] bg-[var(--card)]">
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-6 py-3">
             <div className="flex items-center gap-6">
