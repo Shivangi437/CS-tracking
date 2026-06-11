@@ -1,32 +1,56 @@
 import { getPeriodReport, hasAnySync } from "@/lib/queries";
-import { istToday } from "@/lib/dates";
+import { istToday, istShiftDays } from "@/lib/dates";
 import { StatCard } from "@/components/StatCard";
 import { Leaderboard } from "@/components/Leaderboard";
 import { TopPerformerCard } from "@/components/TopPerformerCard";
 import { RunSyncButton } from "@/components/RunSyncButton";
 import { SyncBadge } from "@/components/SyncBadge";
+import { DatePicker } from "@/components/DatePicker";
+import { BACKFILL_DAYS } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
-export default async function TodayPage() {
+interface PageProps {
+  searchParams: Promise<{ date?: string }>;
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+export default async function TodayPage({ searchParams }: PageProps) {
   const ever = await hasAnySync();
   if (!ever) {
     return <EmptyState />;
   }
 
   const today = istToday();
-  const r = await getPeriodReport(today, today);
+  const sp = await searchParams;
+
+  // Clamp inputs: reject malformed strings, never let a future date through.
+  let date = today;
+  if (sp.date && ISO_DATE.test(sp.date) && sp.date <= today) {
+    date = sp.date;
+  }
+  const isToday = date === today;
+
+  // History floor: how far back the picker lets you go. We keep enough
+  // history that the dashboard is useful for retros, but not infinite.
+  const minDate = istShiftDays(today, -BACKFILL_DAYS - 60);
+
+  const r = await getPeriodReport(date, date);
+
+  const { title, subtitle, periodLabel } = labelsFor(date, today);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Today</h1>
-          <p className="text-sm text-[var(--muted)]">{today} (IST)</p>
+          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+          <p className="text-sm text-[var(--muted)]">{subtitle}</p>
         </div>
-        <div className="flex items-center gap-4">
-          <SyncBadge at={r.lastSyncedAt} />
-          <RunSyncButton variant="subtle" />
+        <div className="flex flex-wrap items-center gap-4">
+          <DatePicker value={date} max={today} min={minDate} />
+          {isToday ? <SyncBadge at={r.lastSyncedAt} /> : null}
+          {isToday ? <RunSyncButton variant="subtle" /> : null}
         </div>
       </div>
 
@@ -47,11 +71,12 @@ export default async function TodayPage() {
         <StatCard
           label="Open"
           value={r.totals.open}
-          tone={r.totals.open > 50 ? "warn" : "default"}
+          tone={isToday && r.totals.open > 50 ? "warn" : "default"}
+          sub={isToday ? undefined : "current snapshot"}
         />
       </div>
 
-      <TopPerformerCard row={r.topPerformer} periodLabel="Today" />
+      <TopPerformerCard row={r.topPerformer} periodLabel={periodLabel} />
 
       <div>
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -62,8 +87,48 @@ export default async function TodayPage() {
           highlightAgentId={r.topPerformer?.agentId ?? null}
         />
       </div>
+
+      {r.rows.every((row) => row.assigned + row.replied + row.resolved === 0) ? (
+        <p className="text-center text-xs text-[var(--subtle)]">
+          No activity recorded for {date}. Pick another date or return to today.
+        </p>
+      ) : null}
     </div>
   );
+}
+
+/** "Today" / "Yesterday" / "8 Jun 2026" — gives the title some warmth. */
+function labelsFor(
+  date: string,
+  today: string
+): { title: string; subtitle: string; periodLabel: string } {
+  if (date === today) {
+    return {
+      title: "Today",
+      subtitle: `${date} (IST)`,
+      periodLabel: "Today",
+    };
+  }
+  const yesterday = istShiftDays(today, -1);
+  if (date === yesterday) {
+    return {
+      title: "Yesterday",
+      subtitle: `${date} (IST)`,
+      periodLabel: "Yesterday",
+    };
+  }
+  const formatted = new Date(`${date}T00:00:00+05:30`).toLocaleString("en-IN", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Kolkata",
+  });
+  return {
+    title: formatted,
+    subtitle: `${date} (IST)`,
+    periodLabel: formatted,
+  };
 }
 
 function EmptyState() {
