@@ -39,13 +39,23 @@ interface AgentDayCounts {
 export async function recomputeRollups(istDates: string[]): Promise<void> {
   if (istDates.length === 0) return;
 
-  const ramaId = env.RAMA_AGENT_ID; // excluded from the leaderboard
-  const ramaExclusion = ramaId
-    ? sql`AND a.id <> ${ramaId}`
-    : sql``;
+  // Build the exclusion clauses once. Rama + anyone in EXCLUDED_AGENT_IDS
+  // never gets a rollup row. We compose them into one SQL fragment so the
+  // CTE stays readable.
+  const ramaId = env.RAMA_AGENT_ID;
+  const excludedIds = env.EXCLUDED_AGENT_IDS;
+  const ramaExclusion = ramaId ? sql`AND a.id <> ${ramaId}` : sql``;
+  const excludedExclusion =
+    excludedIds.length > 0
+      ? sql`AND a.id <> ALL(ARRAY[${sql.join(
+          excludedIds.map((id) => sql`${id}::bigint`),
+          sql`, `
+        )}])`
+      : sql``;
+  const rosterExclusion = sql`${ramaExclusion} ${excludedExclusion}`;
 
   for (const date of istDates) {
-    const counts = await queryAgentCounts(date, ramaExclusion);
+    const counts = await queryAgentCounts(date, rosterExclusion);
     const scored = scoreAgents(counts);
 
     if (scored.length === 0) continue;
@@ -83,12 +93,13 @@ export async function recomputeRollups(istDates: string[]): Promise<void> {
 }
 
 /**
- * One query per date: for every active human executive (≠ Rama), compute
- * the six day-bucketed counts plus the current open snapshot.
+ * One query per date: for every active human executive on the current
+ * roster (≠ Rama, ≠ EXCLUDED_AGENT_IDS), compute the six day-bucketed
+ * counts plus the current open snapshot.
  */
 async function queryAgentCounts(
   date: string,
-  ramaExclusion: ReturnType<typeof sql>
+  rosterExclusion: ReturnType<typeof sql>
 ): Promise<AgentDayCounts[]> {
   const tz = TIMEZONE;
 
@@ -106,7 +117,7 @@ async function queryAgentCounts(
       FROM agents a
       WHERE a.active = true
         AND a.is_ai = false
-        ${ramaExclusion}
+        ${rosterExclusion}
     ),
 
     /* Distinct tickets the exec posted ≥1 human reply on, with IST(replied_at) = d. */

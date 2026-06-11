@@ -47,14 +47,19 @@ export interface PeriodReport {
 
 /**
  * Aggregates agent_daily_stats over [start, end] (both inclusive, IST dates)
- * for every active human executive (excluding Rama). Empty execs are still
- * returned with zeros so they appear on the leaderboard.
+ * for every active human executive on the current CS roster.
+ *
+ * Exclusions: AI bot agents (is_ai=true), the CS manager (RAMA_AGENT_ID),
+ * and anyone in EXCLUDED_AGENT_IDS (people who've left or aren't on the
+ * current active CS team). Empty execs still get zero rows so the
+ * leaderboard surfaces who's idle.
  */
 export async function getPeriodReport(
   start: string,
   end: string
 ): Promise<PeriodReport> {
   const ramaId = env.RAMA_AGENT_ID;
+  const excludedIds = env.EXCLUDED_AGENT_IDS;
 
   const rows = await db
     .select({
@@ -83,7 +88,13 @@ export async function getPeriodReport(
       and(
         eq(agents.active, true),
         eq(agents.isAi, false),
-        ramaId ? sql`${agents.id} <> ${ramaId}` : sql`TRUE`
+        ramaId ? sql`${agents.id} <> ${ramaId}` : sql`TRUE`,
+        excludedIds.length > 0
+          ? sql`${agents.id} <> ALL(ARRAY[${sql.join(
+              excludedIds.map((id) => sql`${id}::bigint`),
+              sql`, `
+            )}])`
+          : sql`TRUE`
       )
     )
     .groupBy(agents.id, agents.name, agents.email);
@@ -196,11 +207,12 @@ export async function getAgentById(agentId: number) {
 }
 
 /**
- * Active human executives, excluding Rama. Used for filters + the agents
- * list page.
+ * Active human executives on the current CS roster (excludes AI, Rama,
+ * and anyone in EXCLUDED_AGENT_IDS). Used for filters + the agents list page.
  */
 export async function listExecutives() {
   const ramaId = env.RAMA_AGENT_ID;
+  const excludedIds = env.EXCLUDED_AGENT_IDS;
   return db
     .select({
       id: agents.id,
@@ -212,7 +224,13 @@ export async function listExecutives() {
       and(
         eq(agents.active, true),
         eq(agents.isAi, false),
-        ramaId ? sql`${agents.id} <> ${ramaId}` : sql`TRUE`
+        ramaId ? sql`${agents.id} <> ${ramaId}` : sql`TRUE`,
+        excludedIds.length > 0
+          ? sql`${agents.id} <> ALL(ARRAY[${sql.join(
+              excludedIds.map((id) => sql`${id}::bigint`),
+              sql`, `
+            )}])`
+          : sql`TRUE`
       )
     )
     .orderBy(agents.name);

@@ -53,6 +53,15 @@ export const env = {
   get RAMA_AGENT_ID(): number | null {
     return readId("RAMA_AGENT_ID", false);
   },
+  /**
+   * Comma-separated agent IDs to exclude from the leaderboard entirely —
+   * inactive teammates, people who've left, anyone not on the current
+   * active CS roster. They still sync (so historical lookups work) but
+   * never show up in /today, /week, /month, agent listings, or rollups.
+   */
+  get EXCLUDED_AGENT_IDS(): number[] {
+    return readIdList("EXCLUDED_AGENT_IDS", false);
+  },
 
   // Database
   get DATABASE_URL() {
