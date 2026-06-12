@@ -29,6 +29,7 @@ const NAV = [
   { href: "/agents", label: "Executives" },
   { href: "/escalations", label: "Escalations" },
   { href: "/summaries", label: "Summaries" },
+  { href: "/admin/team", label: "Team" },
 ];
 
 export default async function RootLayout({

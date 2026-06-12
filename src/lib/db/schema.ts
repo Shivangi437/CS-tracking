@@ -213,6 +213,35 @@ export const escalations = pgTable(
   ]
 );
 
+/**
+ * Manually-curated roster of people who can be credited on escalations
+ * and who can edit them. Separate from the `agents` table — which is
+ * auto-synced from Freshdesk and includes the AI bot + people not on
+ * the current CS roster. This table is hand-managed via /admin/team
+ * and feeds the "Editing as" audit dropdown + the Slack DM target
+ * lookup (slack_member_id).
+ *
+ * Intentionally narrow shape (name, slack_member_id, active) so it
+ * stays a roster, not a profile store.
+ */
+export const teamMembers = pgTable(
+  "team_members",
+  {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),
+    /** Slack U... id used for direct messages. Manually entered. */
+    slackMemberId: text("slack_member_id"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("team_members_name_idx").on(t.name)]
+);
+
 export const syncLog = pgTable(
   "sync_log",
   {
