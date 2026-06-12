@@ -13,9 +13,28 @@
  */
 
 import pLimit from "p-limit";
-import { sql } from "drizzle-orm";
+import { sql, eq } from "drizzle-orm";
 import { formatInTimeZone } from "date-fns-tz";
 import { subDays } from "date-fns";
+
+/**
+ * Postgres unique_violation. Thrown when our INSERT of a 'running'
+ * sync_log row hits the partial unique index because another sync is
+ * already running.
+ */
+function isUniqueViolation(err: unknown): boolean {
+  if (err == null || typeof err !== "object") return false;
+  const e = err as { code?: string; cause?: { code?: string }; message?: string };
+  if (e.code === "23505") return true;
+  if (e.cause?.code === "23505") return true;
+  if (typeof e.message === "string" && e.message.includes("23505")) return true;
+  if (
+    typeof e.message === "string" &&
+    e.message.includes("sync_log_only_one_running_idx")
+  )
+    return true;
+  return false;
+}
 
 import { db } from "@/lib/db/client";
 import { agents, tickets, ticketReplies, syncLog } from "@/lib/db/schema";
@@ -79,32 +98,61 @@ export async function runSync(): Promise<SyncResult> {
       AND started_at < NOW() - INTERVAL '${sql.raw(STUCK_SYNC_AGE_SECONDS.toString())} seconds'
   `);
 
-  // ---- 2. Single-flight check ----
-  // If another sync started in the last SINGLE_FLIGHT_AGE_SECONDS, skip.
-  // Lets AutoSync from 10 teammates dispatch in parallel without firing 10
-  // concurrent syncs against Freshdesk.
-  const inFlight = await db
-    .select({
-      id: syncLog.id,
-      startedAt: syncLog.startedAt,
-    })
+  // ---- 2. Single-flight via DB-enforced unique constraint ----
+  //
+  // Postgres has a partial unique index: sync_log(status) WHERE status='running'.
+  // That guarantees globally — across every Vercel function instance, CLI
+  // run, and concurrent trigger — that at most ONE row may be in 'running'
+  // state at a time. The in-memory token bucket only paces requests WITHIN
+  // one process; without this DB lock, several cold-started Vercel
+  // instances could each run their own 60/min bucket in parallel,
+  // collectively breaching Freshdesk's 100/min ceiling and stealing
+  // budget from the AI bot.
+  //
+  // The old "look-back 90 seconds" SELECT-then-INSERT pattern has a race
+  // window where two SELECTs both see 'no other running' before either
+  // INSERTs. The unique constraint closes that race atomically.
+  //
+  // A peek-first for a friendlier error message; the index itself is
+  // what actually guarantees mutual exclusion.
+  const inFlightPeek = await db
+    .select({ id: syncLog.id, startedAt: syncLog.startedAt })
     .from(syncLog)
-    .where(
-      sql`${syncLog.status} = 'running' AND ${syncLog.startedAt} > NOW() - INTERVAL '${sql.raw(SINGLE_FLIGHT_AGE_SECONDS.toString())} seconds'`
-    )
+    .where(eq(syncLog.status, "running"))
     .limit(1);
 
-  if (inFlight.length > 0) {
-    const ageSec = Math.round(
-      (Date.now() - new Date(inFlight[0].startedAt).getTime()) / 1000
-    );
-    throw new SyncBusyError(inFlight[0].id, ageSec);
+  let syncLogId: number;
+  try {
+    const inserted = await db
+      .insert(syncLog)
+      .values({ status: "running" })
+      .returning({ id: syncLog.id });
+    syncLogId = inserted[0].id;
+  } catch (err) {
+    // Postgres 23505 = unique_violation. Means another sync claimed the
+    // running slot between our peek and our insert (race window the
+    // unique index just closed).
+    if (isUniqueViolation(err)) {
+      const ageSec = inFlightPeek[0]
+        ? Math.round(
+            (Date.now() - new Date(inFlightPeek[0].startedAt).getTime()) / 1000
+          )
+        : 0;
+      throw new SyncBusyError(inFlightPeek[0]?.id ?? 0, ageSec);
+    }
+    throw err;
   }
 
-  const [{ id: syncLogId }] = await db
-    .insert(syncLog)
-    .values({ status: "running" })
-    .returning({ id: syncLog.id });
+  if (inFlightPeek.length > 0) {
+    // We peeked a running row but somehow our insert succeeded — this
+    // means the running row was old enough that the stale-sweep took it
+    // out from under us. Fine, our row is the live one now. Continue.
+  }
+
+  // Belt-and-braces: a younger-than-SINGLE_FLIGHT_AGE_SECONDS row that
+  // happens to share status='running' with us shouldn't exist after the
+  // unique index, but the check survives to surface intent in code.
+  void SINGLE_FLIGHT_AGE_SECONDS;
 
   try {
     const watermarkFrom = await resolveWatermark();

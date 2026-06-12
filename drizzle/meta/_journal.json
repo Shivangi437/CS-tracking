@@ -15,6 +15,13 @@
       "when": 1781008213059,
       "tag": "0001_lethal_blockbuster",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1781251569454,
+      "tag": "0002_ambitious_silver_centurion",
+      "breakpoints": true
     }
   ]
 }

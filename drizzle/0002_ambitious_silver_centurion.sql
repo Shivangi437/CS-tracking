@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "sync_log_only_one_running_idx" ON "sync_log" USING btree ("status") WHERE status = 'running';

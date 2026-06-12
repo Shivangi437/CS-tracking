@@ -213,16 +213,37 @@ export const escalations = pgTable(
   ]
 );
 
-export const syncLog = pgTable("sync_log", {
-  id: serial("id").primaryKey(),
-  startedAt: timestamp("started_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  finishedAt: timestamp("finished_at", { withTimezone: true }),
-  ticketsSynced: integer("tickets_synced").notNull().default(0),
-  /** 'running' | 'success' | 'failure' */
-  status: text("status").notNull(),
-  error: text("error"),
-  /** updated_since watermark for the next incremental sync. */
-  watermark: timestamp("watermark", { withTimezone: true }),
-});
+export const syncLog = pgTable(
+  "sync_log",
+  {
+    id: serial("id").primaryKey(),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    ticketsSynced: integer("tickets_synced").notNull().default(0),
+    /** 'running' | 'success' | 'failure' */
+    status: text("status").notNull(),
+    error: text("error"),
+    /** updated_since watermark for the next incremental sync. */
+    watermark: timestamp("watermark", { withTimezone: true }),
+  },
+  (t) => [
+    /**
+     * Global single-flight guarantee at the database level. At most ONE
+     * row may have status='running' at any moment, anywhere — across all
+     * Vercel function instances, CLI invocations, and concurrent triggers.
+     *
+     * Without this, each Vercel cold-start gets its own fresh in-memory
+     * token bucket and several instances run in parallel, each rate-paced
+     * at 60/min but collectively blowing past Freshdesk's 100/min ceiling
+     * and stealing budget from the AI bot. Postgres rejects a second
+     * INSERT here with a 23505 unique_violation; runSync catches that and
+     * treats it as SyncBusyError (the workflow already handles that as a
+     * success skip).
+     */
+    uniqueIndex("sync_log_only_one_running_idx")
+      .on(t.status)
+      .where(sql`status = 'running'`),
+  ]
+);
