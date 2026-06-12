@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { sql, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { escalations } from "@/lib/db/schema";
+import { escalations, escalationEdits } from "@/lib/db/schema";
 import { deriveAll } from "@/lib/escalations";
 
 /**
@@ -133,7 +133,11 @@ export async function updateEscalationAction(
       return { ok: true, message: "No changes to save.", changedFields: [] };
     }
 
-    // Persist.
+    // Persist + audit log in the same logical operation. Drizzle's
+    // neon-http driver doesn't expose a transaction handle, so we sequence
+    // the UPDATE then the INSERT-batch. Audit failures don't roll back the
+    // edit (per spec, the dashboard still works without a perfect log),
+    // but they're rare — the audit table has no constraints to violate.
     await db
       .update(escalations)
       .set({
@@ -164,7 +168,40 @@ export async function updateEscalationAction(
       })
       .where(eq(escalations.id, input.id));
 
-    // Audit-log writes land in commit 4.
+    // Audit log: one row per changed field. Old/new are stringified to
+    // text so historic comparisons work even after schema changes.
+    const editedBy = input.editingAs.trim();
+    const auditRows = changedFields.map((field) => ({
+      escalationId: input.id,
+      editedBy,
+      fieldName: field,
+      oldValue: serialiseField(prev, field),
+      newValue: serialiseNext(field, {
+        status,
+        category,
+        agent,
+        remediation,
+        notes,
+        freshdeskTicket,
+        verifiedBy,
+        acknowledgedAt: acknowledgedAt ? acknowledgedAt.toISOString() : null,
+        legalThreat: input.legalThreat,
+        closureConfirmed: input.closureConfirmed,
+        creditClass: derived.creditClass,
+        escalationType: derived.escalationType,
+        isPublic: derived.isPublic,
+        needsAttention: derived.needsAttention,
+      }),
+    }));
+    if (auditRows.length > 0) {
+      await db.insert(escalationEdits).values(auditRows).catch((err) => {
+        // Audit failure shouldn't block the user save — log it and move on.
+        console.error(
+          "[escalation-update] audit log insert failed:",
+          err instanceof Error ? err.message : err
+        );
+      });
+    }
 
     revalidatePath("/escalations");
     revalidatePath(`/escalations/${input.id}`);
@@ -255,4 +292,28 @@ function parseDatetimeLocal(s: string): Date | null {
   // Append IST offset so the user-typed wall-clock survives the round trip.
   const d = new Date(s + ":00+05:30");
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Stringify the previous DB row's value of a given field for audit. */
+function serialiseField(
+  prev: typeof escalations.$inferSelect,
+  field: string
+): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const v = (prev as any)[field];
+  return serialiseValue(v);
+}
+
+function serialiseNext(
+  field: string,
+  next: Record<string, unknown>
+): string | null {
+  return serialiseValue(next[field]);
+}
+
+function serialiseValue(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (v instanceof Date) return v.toISOString();
+  return String(v);
 }

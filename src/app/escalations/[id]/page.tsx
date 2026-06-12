@@ -2,10 +2,12 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   getEscalationById,
-  listEscalationAgents,
+  getEscalationEdits,
   type EscalationRow,
 } from "@/lib/queries";
+import { listActiveTeamMemberNames } from "@/lib/team-members";
 import { EscalationEditClient } from "@/components/EscalationEditClient";
+import { EscalationEditHistory } from "@/components/EscalationEditHistory";
 
 export const dynamic = "force-dynamic";
 
@@ -21,9 +23,10 @@ export default async function EscalationDetailPage({ params }: PageProps) {
   const e = await getEscalationById(num);
   if (!e) return notFound();
 
-  // For commit 1 the dropdown's source is the existing distinct-agents
-  // helper. Commit 3 swaps this to team_members + adds the edit UI.
-  const teamMemberNames = await listEscalationAgents();
+  const [teamMemberNames, history] = await Promise.all([
+    listActiveTeamMemberNames(),
+    getEscalationEdits(num),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -51,10 +54,8 @@ export default async function EscalationDetailPage({ params }: PageProps) {
       {/* Editable section */}
       <EscalationEditClient escalation={e} teamMemberNames={teamMemberNames} />
 
-      {/* Audit trail placeholder — populated in commit 4 */}
-      <div className="rounded-lg border border-dashed border-[var(--border)] bg-[var(--card)] p-4 text-sm text-[var(--muted)]">
-        Edit history will appear here once the audit log lands (commit 4).
-      </div>
+      {/* Audit trail */}
+      <EscalationEditHistory entries={history} />
     </div>
   );
 }

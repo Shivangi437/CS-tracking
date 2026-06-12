@@ -224,6 +224,35 @@ export const escalations = pgTable(
  * Intentionally narrow shape (name, slack_member_id, active) so it
  * stays a roster, not a profile store.
  */
+/**
+ * Per-field audit trail for every escalation update. One row per changed
+ * field per save. Credit disputes need a paper trail — not Slack
+ * scrollback — and this is non-negotiable per the spec.
+ *
+ * edited_by is plain text (the name the user picked in the "Editing as"
+ * dropdown) so removing a team_members row never breaks history.
+ */
+export const escalationEdits = pgTable(
+  "escalation_edits",
+  {
+    id: serial("id").primaryKey(),
+    escalationId: integer("escalation_id").notNull(),
+    editedBy: text("edited_by").notNull(),
+    editedAt: timestamp("edited_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    fieldName: text("field_name").notNull(),
+    oldValue: text("old_value"),
+    newValue: text("new_value"),
+  },
+  (t) => [
+    index("escalation_edits_escalation_id_idx").on(
+      t.escalationId,
+      t.editedAt
+    ),
+  ]
+);
+
 export const teamMembers = pgTable(
   "team_members",
   {

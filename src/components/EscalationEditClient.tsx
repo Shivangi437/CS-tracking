@@ -1,17 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   EscalationEditForm,
   type EscalationEditState,
   escalationToEditState,
 } from "@/components/EscalationEditForm";
 import type { EscalationRow } from "@/lib/queries";
+import { updateEscalationAction } from "@/lib/escalation-update";
 
 /**
- * Thin wrapper around EscalationEditForm that owns the "Editing as"
- * dropdown state and the save-result message. The actual save action
- * gets wired in commit 4 — until then onSave shows a placeholder.
+ * Owns the edit form's "Editing as" identity, the in-flight pending
+ * flag, and the save-result toast. The actual server-side write happens
+ * in updateEscalationAction; this just dispatches it.
  */
 export function EscalationEditClient({
   escalation,
@@ -20,8 +22,10 @@ export function EscalationEditClient({
   escalation: EscalationRow;
   teamMemberNames: string[];
 }) {
+  const router = useRouter();
   const initial = escalationToEditState(escalation);
   const [editingAs, setEditingAs] = useState("");
+  const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(
     null
   );
@@ -32,14 +36,30 @@ export function EscalationEditClient({
       teamMemberNames={teamMemberNames}
       editingAs={editingAs}
       onEditingAsChange={(v) => setEditingAs(v)}
+      pending={pending}
       result={result}
-      onSave={async (_next: EscalationEditState) => {
-        // TODO (commit 4): wire updateEscalationAction here. For now the
-        // dropdown + save button exist and validate the user has picked
-        // an "Editing as" identity, but no DB write happens.
-        setResult({
-          ok: false,
-          message: "Save not wired up yet — coming in commit 4.",
+      onSave={(next: EscalationEditState) => {
+        if (!editingAs.trim()) {
+          setResult({
+            ok: false,
+            message: "Pick an 'Editing as' identity first.",
+          });
+          return;
+        }
+        setResult(null);
+        startTransition(async () => {
+          const r = await updateEscalationAction({
+            id: escalation.id,
+            editingAs,
+            ...next,
+          });
+          setResult({ ok: r.ok, message: r.message });
+          if (r.ok) {
+            // Hand off to server: rerender both the detail page (history
+            // block + read-only context) and any list pages that
+            // reference this row.
+            router.refresh();
+          }
         });
       }}
     />

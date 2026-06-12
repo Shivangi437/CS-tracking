@@ -9,6 +9,7 @@ import {
   agentDailyStats,
   agents,
   escalations,
+  escalationEdits,
   syncLog,
   tickets,
 } from "@/lib/db/schema";
@@ -553,4 +554,40 @@ export async function listEscalationAgents(): Promise<string[]> {
     .where(isNotNull(escalations.agent))
     .orderBy(asc(escalations.agent));
   return r.map((x) => x.agent!).filter(Boolean);
+}
+
+// ---------- Escalation edit history ----------
+
+export interface EscalationEditEntry {
+  id: number;
+  editedBy: string;
+  editedAt: Date;
+  fieldName: string;
+  oldValue: string | null;
+  newValue: string | null;
+}
+
+/**
+ * Per-escalation audit trail, most recent first. Drives the history block
+ * on the detail page. Plain text values (booleans serialised "true"/"false",
+ * timestamps as ISO strings) so display works without per-field
+ * deserialisation.
+ */
+export async function getEscalationEdits(
+  escalationId: number,
+  limit = 200
+): Promise<EscalationEditEntry[]> {
+  return db
+    .select({
+      id: escalationEdits.id,
+      editedBy: escalationEdits.editedBy,
+      editedAt: escalationEdits.editedAt,
+      fieldName: escalationEdits.fieldName,
+      oldValue: escalationEdits.oldValue,
+      newValue: escalationEdits.newValue,
+    })
+    .from(escalationEdits)
+    .where(eq(escalationEdits.escalationId, escalationId))
+    .orderBy(desc(escalationEdits.editedAt), desc(escalationEdits.id))
+    .limit(limit);
 }
