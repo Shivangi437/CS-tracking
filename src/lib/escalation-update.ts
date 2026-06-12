@@ -5,6 +5,7 @@ import { sql, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { escalations, escalationEdits } from "@/lib/db/schema";
 import { deriveAll } from "@/lib/escalations";
+import { notifyEscalationUpdate } from "@/lib/slack-escalations";
 
 /**
  * Payload from the inline edit form. All fields the user can touch.
@@ -206,6 +207,33 @@ export async function updateEscalationAction(
     revalidatePath("/escalations");
     revalidatePath(`/escalations/${input.id}`);
     revalidatePath("/agents");
+
+    // Slack notification: fire-and-forget. The function itself never
+    // throws (try/catch internally) and we don't await it here so a
+    // Slack outage or rate limit can't slow down the save response.
+    // Only DMs on status / agent / credit_class changes — exactly the
+    // triggers in the spec.
+    const notifyTriggers = {
+      statusChanged: prev.status !== status,
+      agentChanged: (prev.agent ?? "") !== (agent ?? ""),
+      creditClassChanged: prev.creditClass !== derived.creditClass,
+      previousAgent: prev.agent ?? null,
+      newAgent: agent,
+      previousStatus: prev.status,
+      newStatus: status,
+      previousCreditClass: prev.creditClass,
+      newCreditClass: derived.creditClass,
+    };
+    void notifyEscalationUpdate({
+      escalation: {
+        id: prev.id,
+        authorName: prev.authorName,
+        authorEmail: prev.authorEmail,
+        handle: prev.handle,
+        issueText: prev.issueText,
+      },
+      triggers: notifyTriggers,
+    });
 
     return {
       ok: true,

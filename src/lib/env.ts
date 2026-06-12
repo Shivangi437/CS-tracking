@@ -87,6 +87,18 @@ export const env = {
   get SLACK_WEBHOOK_URL() {
     return read("SLACK_WEBHOOK_URL", false);
   },
+  /** Bot token (xoxb-...) — used for DMs to credited agents + channel posts. */
+  get SLACK_BOT_TOKEN() {
+    return read("SLACK_BOT_TOKEN", false);
+  },
+  /** Channel ID (Cxxxx...) for the cs-escalations channel — also posts here. */
+  get SLACK_ESCALATION_CHANNEL_ID() {
+    return read("SLACK_ESCALATION_CHANNEL_ID", false);
+  },
+  /** Public origin of the dashboard, used to build links in DMs. */
+  get DASHBOARD_ORIGIN() {
+    return read("DASHBOARD_ORIGIN", false);
+  },
 
   // Cron auth (still required — Vercel Cron + GitHub Actions send this header)
   get CRON_SECRET() {
