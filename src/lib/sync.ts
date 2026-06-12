@@ -76,8 +76,14 @@ export class SyncBusyError extends Error {
   }
 }
 
-/** Maximum age (seconds) for a 'running' row before we sweep it as failure. */
-const STUCK_SYNC_AGE_SECONDS = 5 * 60; // 5 min
+/**
+ * Maximum age (seconds) for a 'running' row before we sweep it as failure.
+ * Tightened from 5 min → 90s after the chunked-progress watermark fix:
+ * any progressing sync now updates sync_log every ~30s, so a 'running'
+ * row older than 90s with no chunk advance is definitively a
+ * Vercel-killed zombie.
+ */
+const STUCK_SYNC_AGE_SECONDS = 90;
 /** If a 'running' row is younger than this, we consider another sync in flight. */
 const SINGLE_FLIGHT_AGE_SECONDS = 90;
 

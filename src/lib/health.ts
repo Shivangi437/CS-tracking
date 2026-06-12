@@ -10,8 +10,15 @@ import { sql, desc, and, isNotNull, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { syncLog } from "@/lib/db/schema";
 
-/** Seconds before a 'running' row counts as a zombie that needs sweeping. */
-const STUCK_SYNC_AGE_SECONDS = 5 * 60;
+/**
+ * Seconds before a 'running' row counts as a zombie that needs sweeping.
+ *
+ * With chunked-progress watermark advance (every ~30s), any genuinely
+ * progressing sync updates sync_log frequently. A row that's >90s old
+ * with NO progress is definitively a Vercel-killed zombie. 90s gives
+ * Vercel's 60s maxDuration plus a safety margin.
+ */
+const STUCK_SYNC_AGE_SECONDS = 90;
 
 /**
  * Proactive stale-sweep: mark any 'running' row older than 5 min as failure.
