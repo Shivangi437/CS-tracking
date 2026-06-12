@@ -10,15 +10,21 @@ name: Freshdesk sync
 #   DEPLOY_HOST — production hostname without scheme. Defaults to the alias
 #                 below if unset.
 #
-# v2 — bumped 2026-06-10 to force schedule re-registration after a 24h gap.
+# v3 — 2026-06-12 — rate-limit fix.
+# Schedule reduced from every-30-min during work hours to ONCE PER DAY at
+# 02:00 IST (20:30 UTC). Combined with the token-bucket rate limiter
+# (src/lib/freshdesk.ts) and AutoSync being made read-only (src/components
+# /AutoSync.tsx), this is the only thing that auto-triggers a Freshdesk
+# sync. The manual "Run sync" button on the dashboard is the only other
+# trigger and is the explicit human escape hatch.
 
 on:
   schedule:
-    # Every 30 minutes between 04:00–13:30 UTC = 09:30–19:00 IST.
-    # GitHub Actions can delay schedule fires by 10–30 min during peak load,
-    # so the range is set to comfortably cover BookLeaf CS work hours.
-    - cron: "*/30 4-13 * * *"
-  # Manual trigger from the Actions tab — useful for smoke tests + first run.
+    # 20:30 UTC = 02:00 IST. Overnight, before the CS team starts work.
+    # Single daily window to leave the shared 100 req/min Freshdesk budget
+    # untouched during business hours so the AI bot has full headroom.
+    - cron: "30 20 * * *"
+  # Manual trigger from the Actions tab — useful for smoke tests + ad-hoc.
   workflow_dispatch: {}
   # Run on push to this workflow file so any change is automatically smoke-tested.
   push:

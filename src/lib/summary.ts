@@ -16,7 +16,8 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { summaries } from "@/lib/db/schema";
-import { runSync } from "@/lib/sync";
+// runSync intentionally NOT imported — summary jobs no longer trigger
+// Freshdesk traffic. See the comment in runSummary() for context.
 import { getPeriodReport, type PeriodReport } from "@/lib/queries";
 import { computeAttentionFlags, type AttentionFlag } from "@/lib/attention";
 import { sendSummaryEmail } from "@/lib/email";
@@ -46,15 +47,23 @@ export interface RunSummaryOptions {
 }
 
 export async function runSummary(opts: RunSummaryOptions): Promise<SummaryResult> {
+  // Rate-limit fix (2026-06-12): summary jobs no longer pre-sync.
+  //
+  // Previously, the daily 18:00 IST summary AND the weekly Friday 18:00 IST
+  // summary each kicked off their own runSync() before computing the
+  // report. That meant 2–3 Freshdesk syncs per day on top of the
+  // (then-every-30-min) cron — bursts during business hours that ate into
+  // the shared 100 req/min account budget.
+  //
+  // The new contract: nothing other than the scheduled GitHub Actions
+  // sync cron (02:00 IST) and the manual "Run sync" button can trigger
+  // Freshdesk traffic. Summary jobs read whatever the 02:00 sync put in
+  // the DB. opts.skipSync is now silently ignored — runSync is never
+  // called from here, regardless of the flag.
   if (!opts.skipSync) {
-    try {
-      await runSync();
-    } catch (err) {
-      console.error(
-        "[summary] pre-sync failed; proceeding with existing data:",
-        err instanceof Error ? err.message : err
-      );
-    }
+    // Intentionally left blank — see comment above. Kept as a marked
+    // dead branch so an audit grep shows the deliberate decision.
+    // (Was: try { await runSync(); } catch { ... }.)
   }
 
   const { periodStart, periodEnd, periodLabel } = resolvePeriod(opts.type);
