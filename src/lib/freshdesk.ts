@@ -6,7 +6,12 @@
  */
 
 import { env } from "@/lib/env";
-import { FRESHDESK_PAGE_SIZE } from "@/lib/config";
+import {
+  FRESHDESK_LOW_REMAINING_THRESHOLD,
+  FRESHDESK_PAGE_SIZE,
+  FRESHDESK_TOKEN_BURST,
+  FRESHDESK_TOKEN_RATE_PER_MIN,
+} from "@/lib/config";
 
 export class RateLimitError extends Error {
   constructor(public retryAfterSeconds: number) {
@@ -72,6 +77,100 @@ function authHeader(): string {
   return `Basic ${Buffer.from(`${env.FRESHDESK_API_KEY}:X`).toString("base64")}`;
 }
 
+// ---------- Per-minute token bucket (rate limiter) ----------
+
+/**
+ * Token-bucket throughput limiter for the Freshdesk API.
+ *
+ * This is NOT a concurrency limiter (that's `p-limit`, used elsewhere).
+ * Concurrency caps how many requests run in parallel; this caps how many
+ * requests are allowed to START in any given minute. Both apply: a request
+ * must pass `p-limit` *and* `acquire()` here before it fires.
+ *
+ * Tokens drip in continuously at `ratePerMin / 60` per second. Each fetch
+ * call must `acquire()` a token before issuing the request; if the bucket
+ * is empty the call sleeps until the next drip arrives.
+ *
+ * A global `cooldownUntil` timestamp lets us pause the whole sync — when
+ * any request returns 429 or X-Ratelimit-Remaining drops too low, we set
+ * the cooldown and every other concurrent worker will see it on their next
+ * `acquire()` and wait. This is the sync-wide pause behaviour: one 429
+ * halts the whole sync, not just retries one request.
+ */
+class FreshdeskRateLimiter {
+  private tokens: number;
+  private lastRefill: number;
+  private cooldownUntil = 0;
+  private readonly capacity: number;
+  private readonly refillRatePerSec: number;
+
+  constructor(opts: { capacity: number; ratePerMin: number }) {
+    this.capacity = opts.capacity;
+    this.refillRatePerSec = opts.ratePerMin / 60;
+    this.tokens = opts.capacity; // start full so the first call doesn't wait
+    this.lastRefill = Date.now();
+  }
+
+  /**
+   * Wait for a token. Must be awaited before every Freshdesk fetch.
+   * Loops because a global cooldown can be set while we're sleeping for
+   * a token — we re-check both gates each iteration.
+   */
+  async acquire(): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+
+      // Gate 1: global cooldown (set by 429 or low X-Ratelimit-Remaining)
+      if (this.cooldownUntil > now) {
+        await sleep(this.cooldownUntil - now);
+        continue;
+      }
+
+      // Refill: tokens drift up at refillRatePerSec, capped at capacity.
+      const elapsedSec = (now - this.lastRefill) / 1000;
+      this.tokens = Math.min(
+        this.capacity,
+        this.tokens + elapsedSec * this.refillRatePerSec
+      );
+      this.lastRefill = now;
+
+      // Gate 2: do we have a token?
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+
+      // Sleep just long enough for the next token to drip in, then loop.
+      const waitMs = ((1 - this.tokens) / this.refillRatePerSec) * 1000;
+      await sleep(Math.max(waitMs, 10));
+    }
+  }
+
+  /** Pause the whole sync for `ms` milliseconds. Idempotent / monotonic. */
+  pauseFor(ms: number): void {
+    const until = Date.now() + ms;
+    if (until > this.cooldownUntil) this.cooldownUntil = until;
+  }
+
+  /**
+   * Observe the X-Ratelimit-Remaining header from a response. If headroom
+   * is too low, pause everyone for a full minute window so the AI bot has
+   * room to breathe.
+   */
+  observeRemaining(remaining: number | null): void {
+    if (remaining == null) return;
+    if (remaining < FRESHDESK_LOW_REMAINING_THRESHOLD) {
+      this.pauseFor(60_000);
+    }
+  }
+}
+
+/** Single shared limiter — all Freshdesk calls go through it. */
+const rateLimiter = new FreshdeskRateLimiter({
+  capacity: FRESHDESK_TOKEN_BURST,
+  ratePerMin: FRESHDESK_TOKEN_RATE_PER_MIN,
+});
+
 interface RequestOptions {
   /** Hard cap on retries for 429 / transient 5xx. */
   maxRetries?: number;
@@ -85,6 +184,10 @@ async function apiRequest<T>(
   let attempt = 0;
 
   while (true) {
+    // Gate every request through the per-minute token bucket BEFORE firing.
+    // This is the throughput cap that p-limit can't provide.
+    await rateLimiter.acquire();
+
     const res = await fetch(url, {
       headers: {
         Authorization: authHeader(),
@@ -94,13 +197,23 @@ async function apiRequest<T>(
       cache: "no-store",
     });
 
+    // Observe rate-limit headroom on every response. If we're approaching
+    // the account ceiling, pause the whole sync for a minute so the AI bot
+    // sharing the same budget has room to operate.
+    const remainingHeader = res.headers.get("x-ratelimit-remaining");
+    if (remainingHeader != null) {
+      rateLimiter.observeRemaining(Number(remainingHeader));
+    }
+
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get("retry-after") ?? "1");
+      // Sync-wide pause: every other concurrent worker hits this cooldown
+      // on their next acquire(), not just this single retry. Stops the
+      // other workers from firing into the closed window.
+      rateLimiter.pauseFor(Math.max(retryAfter, 1) * 1000 + jitter());
       if (attempt >= maxRetries) {
         throw new RateLimitError(retryAfter);
       }
-      const wait = Math.max(retryAfter, 1) * 1000;
-      await sleep(wait + jitter());
       attempt++;
       continue;
     }

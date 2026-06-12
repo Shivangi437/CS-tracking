@@ -27,6 +27,31 @@ export const FRESHDESK_CONCURRENCY = 5;
 export const FRESHDESK_PAGE_SIZE = 100;
 
 /**
+ * Freshdesk caps the account at 100 requests per minute (a shared budget
+ * with the AI bot using the same account). We reserve 40 req/min for the
+ * bot by capping our sync at 60 req/min. This is a per-minute throughput
+ * cap implemented via a token bucket — separate from FRESHDESK_CONCURRENCY,
+ * which only governs how many requests run in parallel.
+ */
+export const FRESHDESK_TOKEN_RATE_PER_MIN = 60;
+
+/**
+ * Burst capacity of the token bucket. After an idle gap the bucket can
+ * pre-fill up to this many tokens, letting a small flurry fire back-to-
+ * back at full speed before the per-second drip pacing kicks in. Sustained
+ * rate over any longer window is strictly FRESHDESK_TOKEN_RATE_PER_MIN.
+ * Set to 1 for a strictly paced 1-request-per-second stream.
+ */
+export const FRESHDESK_TOKEN_BURST = 10;
+
+/**
+ * When Freshdesk's X-Ratelimit-Remaining drops below this, pause the whole
+ * sync for the rest of the current minute window. Leaves headroom for the
+ * AI bot if it's busy.
+ */
+export const FRESHDESK_LOW_REMAINING_THRESHOLD = 20;
+
+/**
  * Auto-generated "needs attention" thresholds (per period per executive).
  * Edit to tune the tone of the summary callouts.
  */
