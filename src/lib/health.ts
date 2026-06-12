@@ -107,10 +107,24 @@ export async function getSyncHealth(): Promise<HealthSnapshot> {
   ).length;
   const runningCount = runningRows.length;
 
+  // Thresholds tuned to the twice-daily sync schedule (13:00 + 18:00 IST).
+  // Worst-case expected gap is overnight: ~19h between the 18:00 sync and
+  // the 13:00 next-day sync. We want the banner to stay green during that
+  // expected gap and only flag when a sync actually MISSED its slot.
+  //
+  //   ok        : last sync ≤ 25h ago  (covers the 19h overnight + buffer)
+  //   degraded  : 25–36h               (one missed scheduled sync — both
+  //                                     13:00 OR both 18:00 didn't run)
+  //   broken    : > 36h                (two consecutive missed syncs)
+  //
+  // Stuck syncs (zombie rows older than 90s with no progress) always
+  // count toward degraded regardless of last-sync age — that's a real-
+  // time signal that something's wrong now.
+  const HOUR_MIN = 60;
   let level: HealthLevel = "ok";
   if (ageMinutes == null) level = "broken";
-  else if (ageMinutes > 60) level = "broken";
-  else if (ageMinutes > 20 || stuckCount > 0) level = "degraded";
+  else if (ageMinutes > 36 * HOUR_MIN) level = "broken";
+  else if (ageMinutes > 25 * HOUR_MIN || stuckCount > 0) level = "degraded";
 
   return {
     level,
