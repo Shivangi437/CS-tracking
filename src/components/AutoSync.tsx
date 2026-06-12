@@ -1,58 +1,55 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { triggerSyncAction } from "@/lib/actions";
 
 /**
- * Silently keeps the dashboard fresh.
+ * Re-reads server components from Postgres/Neon at an interval.
  *
- * - On mount: if the last sync is older than `staleAfterMs`, triggers a sync
- *   and soft-refreshes the page so server components re-fetch from the DB.
- * - While the page stays open: re-checks every `pollMs`.
+ * Was previously a sync trigger that called the triggerSyncAction server
+ * action (which ran a real Freshdesk sync) on every dashboard tab open.
+ * That caused unbounded, unpredictable Freshdesk traffic: every teammate
+ * with a tab open was effectively driving the sync, and the bursts ate
+ * the account's 100 req/min budget shared with the AI bot.
  *
- * Throttled by `staleAfterMs` so opening the page 5 times in a minute doesn't
- * fire 5 syncs. An in-flight guard prevents overlapping triggers if a sync is
- * already running.
+ * As of the rate-limit fix this component:
+ *   - NEVER calls Freshdesk.
+ *   - NEVER triggers runSync.
+ *   - ONLY calls router.refresh() — which re-fetches the server-rendered
+ *     components, which re-read from Postgres/Neon. Zero outbound traffic
+ *     to Freshdesk.
+ *
+ * Sync now happens on exactly two triggers:
+ *   1. The scheduled GitHub Actions cron (daily 02:00 IST).
+ *   2. The manual "Run sync" button (explicit human-initiated action).
+ *
+ * The dashboard's "Last synced" badge updates because router.refresh()
+ * re-reads the sync_log table — when the cron lands a new success, the
+ * badge advances on the next 60s tick without anyone clicking anything.
+ *
+ * `lastSyncedAt` is accepted as a prop for API stability with the
+ * existing layout but is no longer used internally.
  */
 export function AutoSync({
-  lastSyncedAt,
-  staleAfterMs = 90_000,
   pollMs = 60_000,
+  lastSyncedAt: _lastSyncedAt,
 }: {
-  lastSyncedAt: string | null;
-  staleAfterMs?: number;
   pollMs?: number;
+  lastSyncedAt?: string | null;
 }) {
   const router = useRouter();
-  const inFlight = useRef(false);
-  const lastSyncRef = useRef<number | null>(
-    lastSyncedAt ? new Date(lastSyncedAt).getTime() : null
-  );
 
   useEffect(() => {
-    const tryRefresh = async () => {
-      if (inFlight.current) return;
-      const last = lastSyncRef.current;
-      const stale = last == null || Date.now() - last > staleAfterMs;
-      if (!stale) return;
-      inFlight.current = true;
+    const tick = () => {
       try {
-        const r = await triggerSyncAction();
-        if (r.ok) {
-          lastSyncRef.current = Date.now();
-          router.refresh();
-        }
+        router.refresh();
       } catch {
-        // Swallow — silent background refresh shouldn't trip a UI error.
-      } finally {
-        inFlight.current = false;
+        // Silent — a transient router.refresh() failure shouldn't break the UI.
       }
     };
-    void tryRefresh();
-    const id = setInterval(tryRefresh, pollMs);
+    const id = setInterval(tick, pollMs);
     return () => clearInterval(id);
-  }, [router, staleAfterMs, pollMs]);
+  }, [router, pollMs]);
 
   return null;
 }
