@@ -10,6 +10,41 @@ import { sql, desc, and, isNotNull, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { syncLog } from "@/lib/db/schema";
 
+/** Seconds before a 'running' row counts as a zombie that needs sweeping. */
+const STUCK_SYNC_AGE_SECONDS = 5 * 60;
+
+/**
+ * Proactive stale-sweep: mark any 'running' row older than 5 min as failure.
+ *
+ * The stale-sweep inside runSync() only fires when a new sync attempt
+ * comes in. If the GH Actions workflow isn't currently looping and
+ * AutoSync is read-only, a zombie 'running' row from a Vercel-killed
+ * function can sit forever, blocking the single-flight unique index and
+ * tripping the health banner.
+ *
+ * Running this from /api/health (which fires on every page render +
+ * every AutoSync tick) means anyone viewing the dashboard implicitly
+ * cleans up zombies. Pure DB UPDATE — no Freshdesk traffic.
+ */
+async function sweepStuckSyncs(): Promise<number> {
+  const r = await db.execute<{ id: number }>(sql`
+    UPDATE sync_log
+    SET status = 'failure',
+        finished_at = NOW(),
+        error = COALESCE(error, '') ||
+                CASE WHEN COALESCE(error, '') = '' THEN '' ELSE ' · ' END ||
+                'stale running row swept by health probe'
+    WHERE status = 'running'
+      AND started_at < NOW() - INTERVAL '${sql.raw(STUCK_SYNC_AGE_SECONDS.toString())} seconds'
+    RETURNING id
+  `);
+  // neon-http returns { rows: [...] } or the array directly depending on
+  // driver version; handle both shapes.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = ((r as any).rows ?? r) as Array<{ id: number }>;
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
 export type HealthLevel = "ok" | "degraded" | "broken";
 
 export interface HealthSnapshot {
@@ -22,6 +57,11 @@ export interface HealthSnapshot {
 }
 
 export async function getSyncHealth(): Promise<HealthSnapshot> {
+  // Self-heal before we report: clear any zombie 'running' rows older
+  // than 5 min so the single-flight slot is never permanently held by
+  // a Vercel-killed function.
+  await sweepStuckSyncs().catch(() => 0);
+
   const [lastSuccess, runningRows] = await Promise.all([
     db
       .select({
