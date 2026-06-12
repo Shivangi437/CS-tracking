@@ -332,6 +332,7 @@ export interface EscalationRow {
   isPublic: boolean;
   authorName: string | null;
   authorEmail: string | null;
+  authorEmailAlt: string | null;
   handle: string | null;
   freshdeskTicket: string | null;
   issueText: string | null;
@@ -344,7 +345,48 @@ export interface EscalationRow {
   closureConfirmed: boolean;
   remediation: string | null;
   agent: string | null;
+  verifiedBy: string | null;
   notes: string | null;
+}
+
+/**
+ * Single escalation by id — drives the /escalations/[id] detail view.
+ * Returns null if not found so the page handler can 404 cleanly.
+ */
+export async function getEscalationById(
+  id: number
+): Promise<EscalationRow | null> {
+  const r = await db
+    .select({
+      id: escalations.id,
+      openedAt: escalations.openedAt,
+      acknowledgedAt: escalations.acknowledgedAt,
+      resolvedAt: escalations.resolvedAt,
+      channel: escalations.channel,
+      medium: escalations.medium,
+      isPublic: escalations.isPublic,
+      authorName: escalations.authorName,
+      authorEmail: escalations.authorEmail,
+      authorEmailAlt: escalations.authorEmailAlt,
+      handle: escalations.handle,
+      freshdeskTicket: escalations.freshdeskTicket,
+      issueText: escalations.issueText,
+      category: escalations.category,
+      status: escalations.status,
+      creditClass: escalations.creditClass,
+      escalationType: escalations.escalationType,
+      legalThreat: escalations.legalThreat,
+      needsAttention: escalations.needsAttention,
+      closureConfirmed: escalations.closureConfirmed,
+      remediation: escalations.remediation,
+      agent: escalations.agent,
+      verifiedBy: escalations.verifiedBy,
+      notes: escalations.notes,
+    })
+    .from(escalations)
+    .where(eq(escalations.id, id))
+    .limit(1);
+  return r[0] ?? null;
 }
 
 /**
@@ -364,6 +406,7 @@ export async function getEscalationWatchlist(limit = 50): Promise<EscalationRow[
       isPublic: escalations.isPublic,
       authorName: escalations.authorName,
       authorEmail: escalations.authorEmail,
+      authorEmailAlt: escalations.authorEmailAlt,
       handle: escalations.handle,
       freshdeskTicket: escalations.freshdeskTicket,
       issueText: escalations.issueText,
@@ -376,6 +419,7 @@ export async function getEscalationWatchlist(limit = 50): Promise<EscalationRow[
       closureConfirmed: escalations.closureConfirmed,
       remediation: escalations.remediation,
       agent: escalations.agent,
+      verifiedBy: escalations.verifiedBy,
       notes: escalations.notes,
     })
     .from(escalations)
@@ -428,6 +472,7 @@ export async function listEscalations(
       isPublic: escalations.isPublic,
       authorName: escalations.authorName,
       authorEmail: escalations.authorEmail,
+      authorEmailAlt: escalations.authorEmailAlt,
       handle: escalations.handle,
       freshdeskTicket: escalations.freshdeskTicket,
       issueText: escalations.issueText,
@@ -440,6 +485,7 @@ export async function listEscalations(
       closureConfirmed: escalations.closureConfirmed,
       remediation: escalations.remediation,
       agent: escalations.agent,
+      verifiedBy: escalations.verifiedBy,
       notes: escalations.notes,
     })
     .from(escalations)
