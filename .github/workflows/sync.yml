@@ -42,12 +42,17 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Daily sync after the 02:00 IST trigger can need many short Vercel
+    # invocations to drain ~24h of activity at the 60 req/min rate cap.
+    # 30 min is enough for ~20 iterations × ~90s = ~30 min of catch-up,
+    # which covers a typical busy day without burning GH Actions budget.
+    timeout-minutes: 30
     steps:
-      - name: POST /api/cron/sync
+      - name: Drain Freshdesk sync queue
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST || 'support-performance-tracker.vercel.app' }}
+          MAX_ITERATIONS: 25
         run: |
           set -euo pipefail
           if [ -z "${CRON_SECRET:-}" ]; then
@@ -56,26 +61,73 @@ jobs:
             exit 1
           fi
           echo "Host: $DEPLOY_HOST"
-          # Vercel function maxDuration is 60s. The app now self-heals on
-          # timeout (resumable watermark + single-flight), so 90s here is more
-          # than enough for any individual incremental sync to return.
-          HTTP_CODE=$(curl -s -o /tmp/sync.json -w '%{http_code}' --max-time 90 \
-            -X POST "https://$DEPLOY_HOST/api/cron/sync" \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            -H "Content-Type: application/json" || echo "000")
-          echo "HTTP $HTTP_CODE"
-          cat /tmp/sync.json || true
+          echo "Looping POST /api/cron/sync until drained (max $MAX_ITERATIONS iters)…"
           echo
-          # Accept 200 with ok:true OR ok:true+skipped:true (single-flight win).
-          if [ "$HTTP_CODE" = "200" ] && jq -e '.ok == true' /tmp/sync.json > /dev/null; then
-            if jq -e '.skipped == true' /tmp/sync.json > /dev/null; then
-              echo "Skipped — another sync was already in flight (normal)."
-            else
-              echo "Synced $(jq -r '.ticketsSynced' /tmp/sync.json) ticket(s) in $(jq -r '.durationMs' /tmp/sync.json)ms"
+
+          ITER=0
+          TOTAL_SYNCED=0
+          while [ $ITER -lt $MAX_ITERATIONS ]; do
+            ITER=$((ITER + 1))
+            echo "── Iteration $ITER ─────────────────────────────────"
+            # 75s curl timeout — slightly above Vercel's 60s maxDuration so
+            # we don't bail before the function returns its actual response.
+            HTTP_CODE=$(curl -s -o /tmp/sync.json -w '%{http_code}' --max-time 75 \
+              -X POST "https://$DEPLOY_HOST/api/cron/sync" \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              -H "Content-Type: application/json" || echo "000")
+            echo "HTTP $HTTP_CODE"
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              cat /tmp/sync.json
+              echo
+
+              # Skipped (single-flight win) → another worker is draining;
+              # wait a beat and re-check.
+              if jq -e '.skipped == true' /tmp/sync.json > /dev/null 2>&1; then
+                echo "skipped — another sync in flight, sleeping 30s"
+                sleep 30
+                continue
+              fi
+
+              if jq -e '.ok == true' /tmp/sync.json > /dev/null 2>&1; then
+                T=$(jq -r '.ticketsSynced // 0' /tmp/sync.json)
+                TOTAL_SYNCED=$((TOTAL_SYNCED + T))
+                echo "iteration synced $T tickets (cumulative: $TOTAL_SYNCED)"
+                # ticketsSynced == 0 means watermark is at the present and
+                # there is nothing left to fetch — we're caught up.
+                if [ "$T" = "0" ]; then
+                  echo "drained — caught up to present after $ITER iteration(s)."
+                  break
+                fi
+                # More to drain → loop straight back; the token bucket
+                # paces the next call, no client-side delay needed.
+                continue
+              fi
+
+              echo "::warning::200 but ok != true; bailing"
+              exit 1
             fi
-          else
-            echo "::error::Sync endpoint did not return ok=true (HTTP $HTTP_CODE)"
+
+            # 504 / 000 (timeout) / 5xx — the Vercel function was likely
+            # killed mid-sync. Per-page watermark means progress is saved;
+            # retry immediately. Only fail after we've burned the iteration
+            # cap, not on a single timeout.
+            if [ "$HTTP_CODE" = "504" ] || [ "$HTTP_CODE" = "000" ] || [ "$HTTP_CODE" = "502" ] || [ "$HTTP_CODE" = "503" ]; then
+              echo "function timed out (HTTP $HTTP_CODE) — watermark advanced server-side, retrying"
+              sleep 5
+              continue
+            fi
+
+            # Anything else (401, 4xx) is fatal.
+            echo "::error::Sync endpoint returned HTTP $HTTP_CODE — aborting"
+            cat /tmp/sync.json || true
             exit 1
+          done
+
+          if [ $ITER -ge $MAX_ITERATIONS ]; then
+            echo "::warning::Hit MAX_ITERATIONS ($MAX_ITERATIONS) without ticketsSynced=0. Synced ~$TOTAL_SYNCED tickets so far; next scheduled run will continue from the current watermark."
+          else
+            echo "✓ Sync drained cleanly: $TOTAL_SYNCED ticket(s) across $ITER iteration(s)."
           fi
 
       - name: Health check
