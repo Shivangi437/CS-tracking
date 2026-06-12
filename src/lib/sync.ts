@@ -181,7 +181,19 @@ export async function runSync(): Promise<SyncResult> {
     const CHUNK_SIZE = 30;
 
     for await (const page of iterateTicketsUpdatedSince(watermarkFrom)) {
-      const keep = page.filter((t) => !t.spam && !t.deleted);
+      // Freshdesk's updated_since is inclusive by second-resolution timestamp,
+      // so the first page of a resumed sync re-lists tickets we already
+      // processed. Skip anything with updated_at <= watermarkFrom so we
+      // don't burn token-bucket budget on re-fetching their conversations.
+      // Idempotent upserts mean re-fetching wouldn't corrupt data, but it
+      // would slow the catch-up considerably.
+      const watermarkMs = watermarkFrom.getTime();
+      const keep = page.filter(
+        (t) =>
+          !t.spam &&
+          !t.deleted &&
+          new Date(t.updated_at).getTime() > watermarkMs
+      );
       if (keep.length === 0) continue;
 
       // Persist the ticket rows up-front in one bulk write — cheap, and
