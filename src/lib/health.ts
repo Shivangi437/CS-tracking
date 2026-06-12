@@ -65,19 +65,20 @@ export interface HealthSnapshot {
 
 export async function getSyncHealth(): Promise<HealthSnapshot> {
   // Self-heal before we report: clear any zombie 'running' rows older
-  // than 5 min so the single-flight slot is never permanently held by
+  // than 90s so the single-flight slot is never permanently held by
   // a Vercel-killed function.
   await sweepStuckSyncs().catch(() => 0);
 
-  const [lastSuccess, runningRows] = await Promise.all([
+  const [latestWatermark, runningRows] = await Promise.all([
+    // "Fresh as of" = MAX(watermark) across ALL syncs (success or failure).
+    // The chunked-progress fix updates watermark per-chunk after rollups
+    // are recomputed, so watermark is the truthful "data on screen is
+    // fresh as of" timestamp — not finished_at of the last completed sync.
     db
-      .select({
-        finishedAt: syncLog.finishedAt,
-        error: syncLog.error,
-      })
+      .select({ watermark: syncLog.watermark })
       .from(syncLog)
-      .where(and(eq(syncLog.status, "success"), isNotNull(syncLog.finishedAt)))
-      .orderBy(desc(syncLog.finishedAt))
+      .where(isNotNull(syncLog.watermark))
+      .orderBy(desc(syncLog.watermark))
       .limit(1),
     db
       .select({
@@ -95,14 +96,14 @@ export async function getSyncHealth(): Promise<HealthSnapshot> {
     .orderBy(desc(syncLog.finishedAt))
     .limit(1);
 
-  const lastSyncedAt = lastSuccess[0]?.finishedAt ?? null;
+  const lastSyncedAt = latestWatermark[0]?.watermark ?? null;
   const ageMinutes = lastSyncedAt
     ? Math.round((Date.now() - new Date(lastSyncedAt).getTime()) / 60000)
     : null;
 
   const now = Date.now();
   const stuckCount = runningRows.filter(
-    (r) => now - new Date(r.startedAt).getTime() > 5 * 60 * 1000
+    (r) => now - new Date(r.startedAt).getTime() > 90 * 1000
   ).length;
   const runningCount = runningRows.length;
 

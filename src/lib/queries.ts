@@ -138,14 +138,25 @@ export async function getPeriodReport(
   };
 }
 
+/**
+ * "Last synced" for the dashboard badge.
+ *
+ * Returns MAX(watermark) across ALL sync_log rows — success or failure.
+ * Each chunk in the sync loop persists watermark + per-date rollups
+ * before advancing, so the watermark is a truthful indicator of how
+ * fresh the data on screen actually is. The previous version returned
+ * the last fully-completed sync's finish time, which misleadingly
+ * showed "1h ago" when partial sync progress had already updated the
+ * dashboard 5 minutes ago.
+ */
 export async function getLastSyncedAt(): Promise<Date | null> {
   const r = await db
-    .select({ finishedAt: syncLog.finishedAt })
+    .select({ watermark: syncLog.watermark })
     .from(syncLog)
-    .where(and(eq(syncLog.status, "success"), isNotNull(syncLog.finishedAt)))
-    .orderBy(desc(syncLog.finishedAt))
+    .where(isNotNull(syncLog.watermark))
+    .orderBy(desc(syncLog.watermark))
     .limit(1);
-  return r[0]?.finishedAt ?? null;
+  return r[0]?.watermark ?? null;
 }
 
 /** Has *any* sync (success or failure) ever run? Used to render empty state. */
