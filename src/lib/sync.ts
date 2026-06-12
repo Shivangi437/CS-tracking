@@ -166,57 +166,92 @@ export async function runSync(): Promise<SyncResult> {
     let pageMaxUpdatedAt: Date | null = null;
     const limiter = pLimit(FRESHDESK_CONCURRENCY);
 
+    // Process each page in CHUNK-sized batches so progress survives a
+    // Vercel 60s function kill. At the token bucket's 60 req/min cap, a
+    // full 100-ticket page can't fit in 60s (needs ~100 sec). With chunks
+    // of 30 (~30 sec per chunk), each Vercel call drains 1-2 chunks and
+    // the next call resumes after a chunk boundary, not from the page
+    // start.
+    const CHUNK_SIZE = 30;
+
     for await (const page of iterateTicketsUpdatedSince(watermarkFrom)) {
       const keep = page.filter((t) => !t.spam && !t.deleted);
       if (keep.length === 0) continue;
 
+      // Persist the ticket rows up-front in one bulk write — cheap, and
+      // means a kill leaves the ticket data correct even if the
+      // conversation fetches haven't finished.
       await upsertTickets(keep);
       ticketsSynced += keep.length;
 
-      // Advance the per-page watermark as we go. If the function is killed
-      // mid-sync (e.g. Vercel 60s timeout), the next invocation resumes
-      // from here instead of re-fetching the same window forever.
-      const pageMaxRaw = keep.reduce(
-        (acc, t) => (acc > t.updated_at ? acc : t.updated_at),
-        keep[0].updated_at
+      // Sort by updated_at ASC so chunk-by-chunk watermark advance is
+      // monotonic — each chunk's MAX(updated_at) is strictly ≥ the
+      // previous chunk's MAX, so resuming from there never re-processes
+      // a completed chunk.
+      const sorted = [...keep].sort((a, b) =>
+        a.updated_at.localeCompare(b.updated_at)
       );
-      pageMaxUpdatedAt = new Date(pageMaxRaw);
 
-      // Track affected IST dates for the rollup step.
-      for (const t of keep) {
-        affected.add(toIstDate(t.updated_at));
-        affected.add(toIstDate(t.created_at));
-        const ra = t.stats?.resolved_at;
-        if (ra) affected.add(toIstDate(ra));
+      for (let i = 0; i < sorted.length; i += CHUNK_SIZE) {
+        const chunkSlice = sorted.slice(i, i + CHUNK_SIZE);
+
+        // Fetch conversations in parallel within the chunk (capped). Per-
+        // ticket try/catch so one transient Freshdesk hiccup doesn't
+        // poison the whole chunk.
+        const replyCounts = await Promise.all(
+          chunkSlice.map((t) =>
+            limiter(async () => {
+              try {
+                const convs = await listConversations(t.id);
+                return await upsertRepliesForTicket(t.id, convs, aiIds);
+              } catch (err) {
+                console.error(
+                  `[sync] ticket ${t.id} conversation fetch failed:`,
+                  err instanceof Error ? err.message : err
+                );
+                return 0;
+              }
+            })
+          )
+        );
+        repliesUpserted += replyCounts.reduce((a, b) => a + b, 0);
+
+        // Affected IST dates for THIS chunk — rolled up immediately so
+        // partial progress always has fresh dashboard numbers.
+        const chunkDates = new Set<string>();
+        for (const t of chunkSlice) {
+          const u = toIstDate(t.updated_at);
+          const c = toIstDate(t.created_at);
+          const r = t.stats?.resolved_at ? toIstDate(t.stats.resolved_at) : null;
+          chunkDates.add(u); affected.add(u);
+          chunkDates.add(c); affected.add(c);
+          if (r) { chunkDates.add(r); affected.add(r); }
+        }
+
+        // Recompute rollups for this chunk's dates BEFORE advancing the
+        // watermark. Invariant: once watermark passes a chunk, the
+        // dashboard's rollup for those dates already reflects this
+        // chunk's data. Cheap (per-date upserts), idempotent (re-running
+        // on the same dates is harmless), and means a kill mid-page
+        // never leaves dates with stale rollups.
+        if (chunkDates.size > 0) {
+          await recomputeRollups([...chunkDates]).catch((err) => {
+            console.error(
+              "[sync] chunk rollup failed:",
+              err instanceof Error ? err.message : err
+            );
+          });
+        }
+
+        // Advance watermark to the chunk's MAX(updated_at). Combined with
+        // the sort above this is monotonic — the next sync resumes here.
+        pageMaxUpdatedAt = new Date(chunkSlice[chunkSlice.length - 1].updated_at);
+
+        await db
+          .update(syncLog)
+          .set({ ticketsSynced, watermark: pageMaxUpdatedAt })
+          .where(sql`${syncLog.id} = ${syncLogId}`);
       }
-
-      // Fetch conversations in parallel (capped). Per-ticket try/catch so
-      // one transient Freshdesk hiccup doesn't poison the whole sync.
-      const replyCounts = await Promise.all(
-        keep.map((t) =>
-          limiter(async () => {
-            try {
-              const convs = await listConversations(t.id);
-              return await upsertRepliesForTicket(t.id, convs, aiIds);
-            } catch (err) {
-              console.error(
-                `[sync] ticket ${t.id} conversation fetch failed:`,
-                err instanceof Error ? err.message : err
-              );
-              return 0;
-            }
-          })
-        )
-      );
-      repliesUpserted += replyCounts.reduce((a, b) => a + b, 0);
-
-      // Persist partial progress + advancing watermark so a crash mid-
-      // backfill still leaves an honest count in sync_log AND the next
-      // sync resumes from where this one stopped (see resolveWatermark).
-      await db
-        .update(syncLog)
-        .set({ ticketsSynced, watermark: pageMaxUpdatedAt })
-        .where(sql`${syncLog.id} = ${syncLogId}`);
     }
 
     // Watermark for the *next* run = this sync's start time (safe overlap;
