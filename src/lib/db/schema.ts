@@ -268,6 +268,11 @@ export const teamMembers = pgTable(
       .notNull()
       .defaultNow(),
   },
+  // Case-insensitive unique index — applied via the SQL migration
+  // 0005_case_insensitive_team_member_names.sql. Drizzle Kit doesn't
+  // model functional indexes well, so the .on(t.name) here is a
+  // placeholder that matches what the migration created; the actual
+  // CREATE INDEX statement uses LOWER(name). Do not regenerate.
   (t) => [uniqueIndex("team_members_name_idx").on(t.name)]
 );
 

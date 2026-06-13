@@ -66,8 +66,10 @@ export interface UpsertResult {
 }
 
 /**
- * Create or update a team member. Name is unique (case-insensitive enforced
- * at the application layer for friendlier errors; the DB also enforces it).
+ * Create or update a team member. Name is unique case-insensitively —
+ * enforced both at the DB layer (LOWER(name) functional unique index,
+ * migration 0005) and re-checked in the action for a friendlier error
+ * message than "23505".
  */
 export async function upsertTeamMemberAction(
   input: UpsertTeamMemberInput
