@@ -123,11 +123,14 @@ export async function updateEscalationAction(
     const prev = existing[0];
 
     // Optimistic concurrency: if the form was loaded against an older
-    // version of the row, refuse the save. Comparing as ISO strings so
-    // serialisation drift doesn't false-positive.
+    // version of the row, refuse the save. Comparing on millisecond-
+    // truncated ISO strings — Postgres timestamptz has microsecond
+    // resolution, JavaScript Date has only millisecond, so a literal
+    // round-trip compare false-positives on otherwise-identical values.
+    const prevUpdatedAtMs = truncMs(new Date(prev.updatedAt).toISOString());
     if (input.baseUpdatedAt) {
-      const dbUpdatedAt = new Date(prev.updatedAt).toISOString();
-      if (dbUpdatedAt !== input.baseUpdatedAt) {
+      const baseMs = truncMs(input.baseUpdatedAt);
+      if (prevUpdatedAtMs !== baseMs) {
         return {
           ok: false,
           message:
@@ -220,7 +223,9 @@ export async function updateEscalationAction(
         input.baseUpdatedAt
           ? and(
               eq(escalations.id, input.id),
-              sql`${escalations.updatedAt} = ${prev.updatedAt}`
+              // Compare on millisecond-truncated values both sides —
+              // see the note above on Postgres-vs-JS Date precision.
+              sql`date_trunc('milliseconds', ${escalations.updatedAt}) = date_trunc('milliseconds', ${prev.updatedAt}::timestamptz)`
             )
           : eq(escalations.id, input.id)
       )
@@ -390,6 +395,19 @@ function collectChanges(
 function roundIsoToMinute(iso: string | null): string | null {
   if (iso == null) return null;
   return iso.slice(0, 16);
+}
+
+/**
+ * Normalise an ISO string to millisecond resolution, dropping any
+ * trailing microseconds Postgres timestamptz may carry. JS Date is
+ * inherently ms-precision so this aligns both representations.
+ */
+function truncMs(iso: string): string {
+  // ISO ends like ".123456Z" or ".123Z" or "Z" (no fractional secs).
+  // Find the . / Z boundary and clip to first 3 digits of fractional.
+  const m = iso.match(/^(.+?\.)(\d{1,6})(.*)$/);
+  if (!m) return iso;
+  return `${m[1]}${m[2].slice(0, 3).padEnd(3, "0")}${m[3]}`;
 }
 
 /**
