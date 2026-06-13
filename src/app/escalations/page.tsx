@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   getEscalationOverview,
   getEscalationWatchlist,
@@ -162,11 +163,18 @@ export default async function EscalationsPage({ searchParams }: PageProps) {
 
 function WatchlistRow({ row }: { row: EscalationRow }) {
   const cls = row.legalThreat
-    ? "border-t border-[var(--bad)]/40 bg-red-50"
-    : "border-t border-[var(--border)]";
+    ? "border-t border-[var(--bad)]/40 bg-red-50 hover:bg-red-100/60"
+    : "border-t border-[var(--border)] hover:bg-[var(--background)]";
   return (
     <tr className={cls}>
-      <td className="px-3 py-2 font-mono text-xs">{row.openedAt ?? "—"}</td>
+      <td className="px-3 py-2 font-mono text-xs">
+        <Link
+          href={`/escalations/${row.id}`}
+          className="hover:underline"
+        >
+          {row.openedAt ?? `#${row.id}`}
+        </Link>
+      </td>
       <td className="px-3 py-2">
         {row.channel}
         <span className="ml-1 text-[var(--subtle)]">
@@ -195,13 +203,20 @@ function WatchlistRow({ row }: { row: EscalationRow }) {
 
 function FullRow({ row }: { row: EscalationRow }) {
   const cls = row.legalThreat
-    ? "border-t border-[var(--bad)]/30 bg-red-50/40"
+    ? "border-t border-[var(--bad)]/30 bg-red-50/40 hover:bg-red-100/60"
     : row.needsAttention
-    ? "border-t border-[var(--border)] bg-amber-50/40"
-    : "border-t border-[var(--border)]";
+    ? "border-t border-[var(--border)] bg-amber-50/40 hover:bg-amber-100/60"
+    : "border-t border-[var(--border)] hover:bg-[var(--background)]";
   return (
     <tr className={cls}>
-      <td className="px-3 py-2 font-mono text-xs">{row.openedAt ?? "—"}</td>
+      <td className="px-3 py-2 font-mono text-xs">
+        <Link
+          href={`/escalations/${row.id}`}
+          className="text-[var(--accent)] hover:underline"
+        >
+          {row.openedAt ?? `#${row.id}`}
+        </Link>
+      </td>
       <td className="px-3 py-2 text-xs">
         {row.channel}
         {row.medium ? <span className="text-[var(--subtle)]"> · {row.medium}</span> : null}
