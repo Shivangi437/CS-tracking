@@ -51,6 +51,11 @@ export function EscalationEditClient({
           const r = await updateEscalationAction({
             id: escalation.id,
             editingAs,
+            // Optimistic-concurrency guard: tell the server which version
+            // of the row we loaded so it can refuse a stale overwrite.
+            baseUpdatedAt: escalation.updatedAt
+              ? new Date(escalation.updatedAt).toISOString()
+              : undefined,
             ...next,
           });
           setResult({ ok: r.ok, message: r.message });

@@ -1,9 +1,9 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { sql, eq } from "drizzle-orm";
+import { sql, eq, and } from "drizzle-orm";
 import { db } from "@/lib/db/client";
-import { escalations, escalationEdits } from "@/lib/db/schema";
+import { escalations, escalationEdits, teamMembers } from "@/lib/db/schema";
 import { deriveAll } from "@/lib/escalations";
 import { notifyEscalationUpdate } from "@/lib/slack-escalations";
 
@@ -17,8 +17,16 @@ import { notifyEscalationUpdate } from "@/lib/slack-escalations";
  */
 export interface EscalationUpdateInput {
   id: number;
-  /** Required — the team_members identity making this edit (commit 4 enforces). */
+  /** Required — the team_members identity making this edit. Validated server-side. */
   editingAs: string;
+  /**
+   * The escalation's `updated_at` ISO string at the moment the form was
+   * loaded. Used for optimistic concurrency: if another save lands
+   * between load and save, the UPDATE's WHERE clause won't match and the
+   * action returns a conflict instead of silently overwriting.
+   * Optional only for backwards compatibility — clients should always send it.
+   */
+  baseUpdatedAt?: string;
 
   status: string;
   category: string;
@@ -73,13 +81,36 @@ export async function updateEscalationAction(
   if (!Number.isFinite(input.id)) {
     return { ok: false, message: "Invalid escalation id." };
   }
-  if (!input.editingAs || !input.editingAs.trim()) {
+  const editingAsName = input.editingAs?.trim() ?? "";
+  if (!editingAsName) {
     return { ok: false, message: "Pick an 'Editing as' identity before saving." };
   }
 
   try {
+    // Verify the "Editing as" name is a real, active team member. We don't
+    // want anonymous strings polluting the audit trail. Case-insensitive
+    // match because team_members.name is now LOWER-unique (migration 0005).
+    const editor = await db
+      .select({ name: teamMembers.name })
+      .from(teamMembers)
+      .where(
+        and(
+          sql`LOWER(${teamMembers.name}) = LOWER(${editingAsName})`,
+          eq(teamMembers.active, true)
+        )
+      )
+      .limit(1);
+    if (editor.length === 0) {
+      return {
+        ok: false,
+        message: `"${editingAsName}" is not on the active team roster. Add them at /admin/team first.`,
+      };
+    }
+    // Use the canonical-cased name from the DB so the audit log is consistent.
+    const editorCanonicalName = editor[0].name;
+
     // Read current row — we need channel + medium for derivation, and
-    // the old field values for the diff/audit-log layer (commit 4).
+    // the old field values for the diff/audit-log layer.
     const existing = await db
       .select()
       .from(escalations)
@@ -90,6 +121,20 @@ export async function updateEscalationAction(
       return { ok: false, message: `Escalation #${input.id} not found.` };
     }
     const prev = existing[0];
+
+    // Optimistic concurrency: if the form was loaded against an older
+    // version of the row, refuse the save. Comparing as ISO strings so
+    // serialisation drift doesn't false-positive.
+    if (input.baseUpdatedAt) {
+      const dbUpdatedAt = new Date(prev.updatedAt).toISOString();
+      if (dbUpdatedAt !== input.baseUpdatedAt) {
+        return {
+          ok: false,
+          message:
+            "Someone else updated this escalation while you had it open. Reload the page to see their changes, then re-apply yours.",
+        };
+      }
+    }
 
     // Normalise inputs.
     const status = input.status.trim();
@@ -139,7 +184,11 @@ export async function updateEscalationAction(
     // the UPDATE then the INSERT-batch. Audit failures don't roll back the
     // edit (per spec, the dashboard still works without a perfect log),
     // but they're rare — the audit table has no constraints to violate.
-    await db
+    // UPDATE with optimistic-concurrency clause: only apply if the row's
+    // updated_at still matches what we loaded. Returns the affected row's
+    // updated_at so we can confirm we won the race; if no row returns the
+    // user lost the race and another save overwrote us.
+    const updated = await db
       .update(escalations)
       .set({
         status,
@@ -167,11 +216,30 @@ export async function updateEscalationAction(
         `,
         updatedAt: sql`NOW()`,
       })
-      .where(eq(escalations.id, input.id));
+      .where(
+        input.baseUpdatedAt
+          ? and(
+              eq(escalations.id, input.id),
+              sql`${escalations.updatedAt} = ${prev.updatedAt}`
+            )
+          : eq(escalations.id, input.id)
+      )
+      .returning({ id: escalations.id });
+
+    if (updated.length === 0) {
+      // Lost the optimistic race. Per spec, never silently overwrite.
+      return {
+        ok: false,
+        message:
+          "Save conflicted with another edit. Reload to see the latest state then try again.",
+      };
+    }
 
     // Audit log: one row per changed field. Old/new are stringified to
-    // text so historic comparisons work even after schema changes.
-    const editedBy = input.editingAs.trim();
+    // text so historic comparisons work even after schema changes. Use
+    // the DB-canonical cased name so audit entries are consistent
+    // regardless of how the user typed the dropdown value.
+    const editedBy = editorCanonicalName;
     const auditRows = changedFields.map((field) => ({
       escalationId: input.id,
       editedBy,
@@ -302,12 +370,26 @@ function collectChanges(
   cmp("escalationType", prev.escalationType, next.escalationType);
   cmp("isPublic", prev.isPublic, next.isPublic);
   cmp("needsAttention", prev.needsAttention, next.needsAttention);
-  // acknowledgedAt — compare ISO strings.
-  const prevAck = prev.acknowledgedAt
-    ? new Date(prev.acknowledgedAt).toISOString()
-    : null;
-  if (prevAck !== next.acknowledgedAt) out.push("acknowledgedAt");
+  // acknowledgedAt — datetime-local inputs are minute-resolution, but
+  // the DB may store seconds (from a previous full timestamp insert).
+  // Round both sides to the minute before comparing so a no-op save
+  // doesn't false-positive on the seconds.
+  const prevAck = roundIsoToMinute(
+    prev.acknowledgedAt ? new Date(prev.acknowledgedAt).toISOString() : null
+  );
+  const nextAck = roundIsoToMinute(next.acknowledgedAt);
+  if (prevAck !== nextAck) out.push("acknowledgedAt");
   return out;
+}
+
+/**
+ * Truncate an ISO string to minute resolution ("yyyy-MM-ddTHH:mmZ").
+ * Used by the acknowledgedAt diff so an unchanged minute doesn't
+ * register as changed when the stored value carries seconds.
+ */
+function roundIsoToMinute(iso: string | null): string | null {
+  if (iso == null) return null;
+  return iso.slice(0, 16);
 }
 
 /**

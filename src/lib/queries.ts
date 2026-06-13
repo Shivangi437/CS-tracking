@@ -348,6 +348,8 @@ export interface EscalationRow {
   agent: string | null;
   verifiedBy: string | null;
   notes: string | null;
+  /** Used by the detail page for optimistic-concurrency save guards. */
+  updatedAt: Date | null;
 }
 
 /**
@@ -383,6 +385,7 @@ export async function getEscalationById(
       agent: escalations.agent,
       verifiedBy: escalations.verifiedBy,
       notes: escalations.notes,
+      updatedAt: escalations.updatedAt,
     })
     .from(escalations)
     .where(eq(escalations.id, id))
@@ -422,6 +425,7 @@ export async function getEscalationWatchlist(limit = 50): Promise<EscalationRow[
       agent: escalations.agent,
       verifiedBy: escalations.verifiedBy,
       notes: escalations.notes,
+      updatedAt: escalations.updatedAt,
     })
     .from(escalations)
     .where(
@@ -488,6 +492,7 @@ export async function listEscalations(
       agent: escalations.agent,
       verifiedBy: escalations.verifiedBy,
       notes: escalations.notes,
+      updatedAt: escalations.updatedAt,
     })
     .from(escalations)
     .where(conds.length ? and(...conds) : sql`TRUE`)
