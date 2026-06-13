@@ -7,6 +7,7 @@ import {
   type EscalationRow,
   type ListEscalationsFilters,
 } from "@/lib/queries";
+import { listActiveTeamMemberNames } from "@/lib/team-members";
 import { StatCard } from "@/components/StatCard";
 import { EscalationFilters } from "@/components/EscalationFilters";
 import { NewEscalationForm } from "@/components/NewEscalationForm";
@@ -43,12 +44,23 @@ export default async function EscalationsPage({ searchParams }: PageProps) {
         : undefined,
   };
 
-  const [overview, watchlist, rows, agents] = await Promise.all([
-    getEscalationOverview(),
-    getEscalationWatchlist(50),
-    listEscalations(filters),
-    listEscalationAgents(),
-  ]);
+  // The new-escalation form and the existing filter dropdown each want
+  // a different list. New-form uses the curated team_members roster (so
+  // crediting a brand-new exec works before they have any historical
+  // escalations). Filter still uses listEscalationAgents (distinct agent
+  // names in actual escalations) so historical names remain filterable.
+  const [overview, watchlist, rows, historicalAgents, teamMemberNames] =
+    await Promise.all([
+      getEscalationOverview(),
+      getEscalationWatchlist(50),
+      listEscalations(filters),
+      listEscalationAgents(),
+      listActiveTeamMemberNames(),
+    ]);
+  // De-dupe in case a team member is also already in the historical set.
+  const newFormAgents = Array.from(
+    new Set([...teamMemberNames, ...historicalAgents])
+  );
 
   return (
     <div className="space-y-6">
@@ -114,7 +126,7 @@ export default async function EscalationsPage({ searchParams }: PageProps) {
         )}
       </div>
 
-      <NewEscalationForm agents={agents} />
+      <NewEscalationForm agents={newFormAgents} />
 
       {/* Filter bar + all-escalations table */}
       <div>
@@ -122,7 +134,7 @@ export default async function EscalationsPage({ searchParams }: PageProps) {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">
             All escalations · {rows.length} shown
           </h2>
-          <EscalationFilters agents={agents} />
+          <EscalationFilters agents={historicalAgents} />
         </div>
 
         <div className="overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)]">

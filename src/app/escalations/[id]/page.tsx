@@ -13,9 +13,14 @@ export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  /** Carried through from the list page so the back link preserves filters. */
+  searchParams: Promise<Record<string, string | undefined>>;
 }
 
-export default async function EscalationDetailPage({ params }: PageProps) {
+export default async function EscalationDetailPage({
+  params,
+  searchParams,
+}: PageProps) {
   const { id } = await params;
   const num = Number(id);
   if (!Number.isFinite(num)) return notFound();
@@ -23,16 +28,28 @@ export default async function EscalationDetailPage({ params }: PageProps) {
   const e = await getEscalationById(num);
   if (!e) return notFound();
 
-  const [teamMemberNames, history] = await Promise.all([
+  const [teamMemberNames, history, sp] = await Promise.all([
     listActiveTeamMemberNames(),
     getEscalationEdits(num),
+    searchParams,
   ]);
+
+  // Preserve any filter state from the list page on the back link so the
+  // user lands back where they started, not at the empty filter view.
+  const backHref = (() => {
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(sp)) {
+      if (v && typeof v === "string") params.set(k, v);
+    }
+    const qs = params.toString();
+    return qs ? `/escalations?${qs}` : "/escalations";
+  })();
 
   return (
     <div className="space-y-6">
       <div>
         <Link
-          href="/escalations"
+          href={backHref}
           className="text-xs text-[var(--muted)] hover:underline"
         >
           ← back to escalations

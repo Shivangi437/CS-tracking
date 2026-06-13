@@ -345,7 +345,9 @@ function humanStatus(s: string): string {
 }
 
 function fmtAgent(a: string | null): string {
-  return a && a.trim() ? a.trim() : "_unassigned_";
+  // Use plain text "(unassigned)" rather than underscores so Slack doesn't
+  // render it as italics (underscores are mrkdwn for italic).
+  return a && a.trim() ? a.trim() : "(unassigned)";
 }
 
 function escape(s: string): string {

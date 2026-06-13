@@ -90,8 +90,14 @@ function formatValue(v: string | null): React.ReactNode {
       if (!Number.isNaN(d.getTime())) {
         return formatStamp(d);
       }
-    } catch {
-      /* fall through */
+    } catch (err) {
+      // Surface unexpected ISO parse failures so they're noticeable in
+      // server logs rather than silently degrading the user's view.
+      console.warn(
+        "[escalation-history] failed to parse ISO timestamp:",
+        v,
+        err instanceof Error ? err.message : err
+      );
     }
   }
   return v;

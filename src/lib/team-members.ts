@@ -36,15 +36,26 @@ export async function listActiveTeamMemberNames(): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
-/** Look up a Slack member id by name. Returns null if unknown or empty. */
+/**
+ * Look up a Slack member id by name. Returns null if unknown or empty.
+ *
+ * Normalises the input before matching: trims whitespace AND collapses
+ * multiple internal spaces. Case-insensitive via LOWER() on both sides.
+ * This makes the notifier tolerant of small typos in the freeform
+ * "Credited executive" input (e.g. "Karan  Mandal" with a double space
+ * still finds "Karan Mandal").
+ */
 export async function getSlackMemberIdForName(
   name: string
 ): Promise<string | null> {
-  if (!name.trim()) return null;
+  const normalised = name.trim().replace(/\s+/g, " ");
+  if (!normalised) return null;
   const r = await db
     .select({ slackMemberId: teamMembers.slackMemberId })
     .from(teamMembers)
-    .where(sql`LOWER(${teamMembers.name}) = LOWER(${name.trim()})`)
+    .where(
+      sql`LOWER(REGEXP_REPLACE(${teamMembers.name}, '\\s+', ' ', 'g')) = LOWER(${normalised})`
+    )
     .limit(1);
   return r[0]?.slackMemberId ?? null;
 }
