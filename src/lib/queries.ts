@@ -3,7 +3,7 @@
  * summary jobs both call these — never Freshdesk on page load.
  */
 
-import { sql, desc, eq, and, gte, lte, isNotNull, asc } from "drizzle-orm";
+import { sql, desc, eq, and, gte, lte, lt, isNotNull, asc } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import {
   agentDailyStats,
@@ -14,6 +14,7 @@ import {
   tickets,
 } from "@/lib/db/schema";
 import { env } from "@/lib/env";
+import { type PortalKey } from "@/lib/config";
 
 export interface LeaderboardRow {
   agentId: number;
@@ -164,6 +165,110 @@ export async function getLastSyncedAt(): Promise<Date | null> {
 export async function hasAnySync(): Promise<boolean> {
   const r = await db.select({ id: syncLog.id }).from(syncLog).limit(1);
   return r.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Portal backlog (current open-ticket snapshot, split by Freshdesk Product)
+//
+// Computed entirely from the locally-synced `tickets` table — NEVER hits
+// Freshdesk on page load, so the shared AI-bot rate budget is untouched.
+// Portal split: product_id IS NULL → "usual"; NOT NULL → "bestseller".
+// ---------------------------------------------------------------------------
+
+/** SQL expression that maps a ticket to its portal key. */
+const PORTAL_EXPR = sql<PortalKey>`CASE WHEN ${tickets.productId} IS NULL THEN 'usual' ELSE 'bestseller' END`;
+
+export interface PortalBacklog {
+  /** status = 2 (Open) — unassigned-or-assigned, awaiting the team. */
+  open: number;
+  /** status = 3 (Pending) — waiting on the author. */
+  pending: number;
+  /** Any other non-resolved status (e.g. "On hold" custom statuses). */
+  onHold: number;
+  /** open + pending + onHold. */
+  unresolvedTotal: number;
+}
+
+export type BacklogByPortal = Record<PortalKey, PortalBacklog>;
+
+const EMPTY_BACKLOG = (): PortalBacklog => ({
+  open: 0,
+  pending: 0,
+  onHold: 0,
+  unresolvedTotal: 0,
+});
+
+/**
+ * Current backlog snapshot per portal. Counts every non-resolved, non-spam,
+ * non-deleted ticket (status NOT IN 4=Resolved, 5=Closed), bucketed by status.
+ */
+export async function getBacklogByPortal(): Promise<BacklogByPortal> {
+  const rows = await db
+    .select({
+      portal: PORTAL_EXPR,
+      open: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} = 2)::int`,
+      pending: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} = 3)::int`,
+      onHold: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} NOT IN (2, 3, 4, 5))::int`,
+      unresolvedTotal: sql<number>`COUNT(*)::int`,
+    })
+    .from(tickets)
+    .where(
+      and(
+        sql`${tickets.status} NOT IN (4, 5)`,
+        eq(tickets.spam, false),
+        eq(tickets.deleted, false)
+      )
+    )
+    .groupBy(PORTAL_EXPR);
+
+  const out: BacklogByPortal = {
+    usual: EMPTY_BACKLOG(),
+    bestseller: EMPTY_BACKLOG(),
+  };
+  for (const r of rows) {
+    out[r.portal] = {
+      open: r.open,
+      pending: r.pending,
+      onHold: r.onHold,
+      unresolvedTotal: r.unresolvedTotal,
+    };
+  }
+  return out;
+}
+
+export type ResolvedByPortal = Record<PortalKey, number>;
+
+/**
+ * Count of tickets resolved within the given IST day (yyyy-MM-dd), per portal.
+ * Credited by resolved_at, matching how the rest of the app buckets resolution.
+ */
+export async function getResolvedTodayByPortal(
+  date: string
+): Promise<ResolvedByPortal> {
+  const start = new Date(`${date}T00:00:00+05:30`);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 1);
+
+  const rows = await db
+    .select({
+      portal: PORTAL_EXPR,
+      resolved: sql<number>`COUNT(*)::int`,
+    })
+    .from(tickets)
+    .where(
+      and(
+        isNotNull(tickets.resolvedAt),
+        gte(tickets.resolvedAt, start),
+        lt(tickets.resolvedAt, end),
+        eq(tickets.spam, false),
+        eq(tickets.deleted, false)
+      )
+    )
+    .groupBy(PORTAL_EXPR);
+
+  const out: ResolvedByPortal = { usual: 0, bestseller: 0 };
+  for (const r of rows) out[r.portal] = r.resolved;
+  return out;
 }
 
 export interface AgentDailySeriesPoint {

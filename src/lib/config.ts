@@ -6,6 +6,27 @@
 export const TIMEZONE = "Asia/Kolkata";
 
 /**
+ * The two Freshdesk support portals, modelled as Freshdesk "Products".
+ * There are exactly two products in the account — "None" and "bestseller" —
+ * so a ticket's product_id cleanly splits them:
+ *   product_id IS NULL  → "usual"      (the default / "None" product)
+ *   product_id NOT NULL → "bestseller" (the premium product)
+ *
+ * Targets are tunable. `backlogCap` is the max acceptable Open+Pending the
+ * team should be holding at any moment; `dailyResolveTarget` is the resolved-
+ * per-IST-day goal. The /backlog view flags green/red against these.
+ */
+export const PORTAL_TARGETS = {
+  usual: { label: "Usual", backlogCap: 25, dailyResolveTarget: 40 },
+  bestseller: { label: "Bestseller", backlogCap: 15, dailyResolveTarget: 20 },
+} as const;
+
+export type PortalKey = keyof typeof PORTAL_TARGETS;
+
+/** Ordered list of portal keys for stable rendering. */
+export const PORTAL_KEYS = ["usual", "bestseller"] as const;
+
+/**
  * Top-performer score weights. Both must be ≥ 0; passthrough is deliberately
  * absent so AI-handled closes never inflate human merit.
  *

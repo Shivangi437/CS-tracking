@@ -36,6 +36,12 @@ export const tickets = pgTable(
     priority: integer("priority"),
     responderId: bigint("responder_id", { mode: "number" }),
     groupId: bigint("group_id", { mode: "number" }),
+    /**
+     * Freshdesk Product id. Null = the "None" product = the *usual* support
+     * portal; non-null = the "bestseller" product. Already present in the
+     * ticket payload the sync fetches, so capturing it costs no extra API calls.
+     */
+    productId: bigint("product_id", { mode: "number" }),
     createdAt: timestamp("created_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true }),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
@@ -53,6 +59,7 @@ export const tickets = pgTable(
     index("tickets_responder_idx").on(t.responderId),
     index("tickets_resolved_at_idx").on(t.resolvedAt),
     index("tickets_updated_at_idx").on(t.updatedAt),
+    index("tickets_product_id_idx").on(t.productId),
   ]
 );
 

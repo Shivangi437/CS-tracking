@@ -1,4 +1,9 @@
-import { getPeriodReport, hasAnySync } from "@/lib/queries";
+import Link from "next/link";
+import {
+  getPeriodReport,
+  getBacklogByPortal,
+  hasAnySync,
+} from "@/lib/queries";
 import { istToday, istShiftDays } from "@/lib/dates";
 import { StatCard } from "@/components/StatCard";
 import { Leaderboard } from "@/components/Leaderboard";
@@ -6,7 +11,7 @@ import { TopPerformerCard } from "@/components/TopPerformerCard";
 import { RunSyncButton } from "@/components/RunSyncButton";
 import { SyncBadge } from "@/components/SyncBadge";
 import { DatePicker } from "@/components/DatePicker";
-import { BACKFILL_DAYS } from "@/lib/config";
+import { BACKFILL_DAYS, PORTAL_KEYS, PORTAL_TARGETS } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +42,10 @@ export default async function TodayPage({ searchParams }: PageProps) {
   const minDate = istShiftDays(today, -BACKFILL_DAYS - 60);
 
   const r = await getPeriodReport(date, date);
+
+  // Live backlog snapshot is only meaningful for "today" (it's current state,
+  // not a historical figure), so we only fetch + show it on the today view.
+  const backlog = isToday ? await getBacklogByPortal() : null;
 
   const { title, subtitle, periodLabel } = labelsFor(date, today);
 
@@ -75,6 +84,38 @@ export default async function TodayPage({ searchParams }: PageProps) {
           sub={isToday ? undefined : "current snapshot"}
         />
       </div>
+
+      {backlog ? (
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Backlog by portal
+            </h2>
+            <Link
+              href="/backlog"
+              className="text-xs text-[var(--muted)] hover:text-[var(--foreground)]"
+            >
+              View details →
+            </Link>
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {PORTAL_KEYS.map((key) => {
+              const t = PORTAL_TARGETS[key];
+              const b = backlog[key];
+              const owned = b.open + b.pending;
+              return (
+                <StatCard
+                  key={key}
+                  label={`${t.label} backlog`}
+                  value={owned}
+                  sub={`${b.open} open / ${b.pending} pending · cap ${t.backlogCap}`}
+                  tone={owned > t.backlogCap ? "bad" : "good"}
+                />
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <TopPerformerCard row={r.topPerformer} periodLabel={periodLabel} />
 

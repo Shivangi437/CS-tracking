@@ -53,6 +53,8 @@ export interface FreshdeskTicket {
   priority: number;
   responder_id: number | null;
   group_id: number | null;
+  /** Freshdesk Product id; null = "None" product (the usual portal). */
+  product_id: number | null;
   created_at: string;
   updated_at: string;
   spam: boolean;
@@ -288,6 +290,17 @@ export async function* iterateTicketsUpdatedSince(
     yield data;
     url = nextLink(headers);
   }
+}
+
+/**
+ * Fetch a single ticket by id (includes product_id). Goes through the same
+ * shared rate limiter as every other call, so it's safe to loop over the
+ * open backlog without starving the AI bot's share of the account budget.
+ * Used by the one-time scripts/backfill-product-id.ts pass.
+ */
+export async function fetchTicket(id: number): Promise<FreshdeskTicket> {
+  const { data } = await apiRequest<FreshdeskTicket>(`/tickets/${id}`);
+  return data;
 }
 
 export async function listConversations(
