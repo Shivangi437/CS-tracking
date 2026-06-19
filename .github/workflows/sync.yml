@@ -21,13 +21,13 @@ name: Freshdesk sync
 on:
   schedule:
     # Twice daily, during IST work hours:
-    #   07:30 UTC = 13:00 IST (lunchtime)
-    #   12:30 UTC = 18:00 IST (end of day)
+    #   08:30 UTC = 14:00 IST (2:00 PM, afternoon)
+    #   12:15 UTC = 17:45 IST (5:45 PM, end of day)
     # The token-bucket rate limiter keeps us at 60 req/min outbound, so
     # the AI bot still has ≥40 req/min of headroom on the shared budget
     # even while these runs are active.
-    - cron: "30 7 * * *"
-    - cron: "30 12 * * *"
+    - cron: "30 8 * * *"
+    - cron: "15 12 * * *"
   # Manual trigger from the Actions tab — useful for smoke tests + ad-hoc.
   workflow_dispatch: {}
   # Run on push to this workflow file so any change is automatically smoke-tested.
