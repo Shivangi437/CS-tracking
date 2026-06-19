@@ -63,12 +63,12 @@ export default async function BacklogPage() {
 
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 <StatCard label="Open" value={b.open} />
-                <StatCard label="Pending" value={b.pending} />
-                <StatCard label="On hold" value={b.onHold} />
+                <StatCard label="On hold" value={b.pending} />
+                <StatCard label="Other" value={b.onHold} />
                 <StatCard
                   label="Backlog"
                   value={ownedBacklog}
-                  sub={`Open+Pending · cap ${t.backlogCap}`}
+                  sub={`Open+On hold · cap ${t.backlogCap}`}
                   tone={overCap ? "bad" : "good"}
                 />
                 <StatCard

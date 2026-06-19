@@ -181,9 +181,9 @@ const PORTAL_EXPR = sql<PortalKey>`CASE WHEN ${tickets.productId} IS NULL THEN '
 export interface PortalBacklog {
   /** status = 2 (Open) — unassigned-or-assigned, awaiting the team. */
   open: number;
-  /** status = 3 (Pending) — waiting on the author. */
+  /** status = 3 (Freshdesk "Pending"; this account surfaces it as "On hold"). */
   pending: number;
-  /** Any other non-resolved status (e.g. "On hold" custom statuses). */
+  /** Any other non-resolved status (custom statuses); UI labels this "Other". */
   onHold: number;
   /** open + pending + onHold. */
   unresolvedTotal: number;

@@ -17,8 +17,8 @@ export const TIMEZONE = "Asia/Kolkata";
  * per-IST-day goal. The /backlog view flags green/red against these.
  */
 export const PORTAL_TARGETS = {
-  usual: { label: "Usual", backlogCap: 25, dailyResolveTarget: 40 },
-  bestseller: { label: "Bestseller", backlogCap: 15, dailyResolveTarget: 20 },
+  usual: { label: "Usual", backlogCap: 30, dailyResolveTarget: 50 },
+  bestseller: { label: "Bestseller", backlogCap: 15, dailyResolveTarget: 25 },
 } as const;
 
 export type PortalKey = keyof typeof PORTAL_TARGETS;
