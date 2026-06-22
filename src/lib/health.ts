@@ -42,7 +42,7 @@ async function sweepStuckSyncs(): Promise<number> {
                 CASE WHEN COALESCE(error, '') = '' THEN '' ELSE ' · ' END ||
                 'stale running row swept by health probe'
     WHERE status = 'running'
-      AND started_at < NOW() - INTERVAL '${sql.raw(STUCK_SYNC_AGE_SECONDS.toString())} seconds'
+      AND COALESCE(last_progress_at, started_at) < NOW() - INTERVAL '${sql.raw(STUCK_SYNC_AGE_SECONDS.toString())} seconds'
     RETURNING id
   `);
   // neon-http returns { rows: [...] } or the array directly depending on
@@ -84,6 +84,7 @@ export async function getSyncHealth(): Promise<HealthSnapshot> {
       .select({
         id: syncLog.id,
         startedAt: syncLog.startedAt,
+        lastProgressAt: syncLog.lastProgressAt,
       })
       .from(syncLog)
       .where(eq(syncLog.status, "running")),
@@ -103,7 +104,8 @@ export async function getSyncHealth(): Promise<HealthSnapshot> {
 
   const now = Date.now();
   const stuckCount = runningRows.filter(
-    (r) => now - new Date(r.startedAt).getTime() > 90 * 1000
+    (r) =>
+      now - new Date(r.lastProgressAt ?? r.startedAt).getTime() > 90 * 1000
   ).length;
   const runningCount = runningRows.length;
 

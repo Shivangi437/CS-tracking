@@ -101,7 +101,7 @@ export async function runSync(): Promise<SyncResult> {
                 CASE WHEN COALESCE(error, '') = '' THEN '' ELSE ' · ' END ||
                 'stale running row swept on next sync start'
     WHERE status = 'running'
-      AND started_at < NOW() - INTERVAL '${sql.raw(STUCK_SYNC_AGE_SECONDS.toString())} seconds'
+      AND COALESCE(last_progress_at, started_at) < NOW() - INTERVAL '${sql.raw(STUCK_SYNC_AGE_SECONDS.toString())} seconds'
   `);
 
   // ---- 2. Single-flight via DB-enforced unique constraint ----
@@ -267,7 +267,11 @@ export async function runSync(): Promise<SyncResult> {
 
         await db
           .update(syncLog)
-          .set({ ticketsSynced, watermark: pageMaxUpdatedAt })
+          .set({
+            ticketsSynced,
+            watermark: pageMaxUpdatedAt,
+            lastProgressAt: new Date(),
+          })
           .where(sql`${syncLog.id} = ${syncLogId}`);
       }
     }

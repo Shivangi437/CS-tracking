@@ -290,6 +290,14 @@ export const syncLog = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Heartbeat — bumped to NOW() each time a chunk commits progress. The
+     * stale-sweep keys off THIS (not started_at) so a long but actively
+     * progressing sync is never mistaken for a Vercel-killed zombie.
+     */
+    lastProgressAt: timestamp("last_progress_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     ticketsSynced: integer("tickets_synced").notNull().default(0),
     /** 'running' | 'success' | 'failure' */
