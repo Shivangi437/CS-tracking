@@ -179,14 +179,12 @@ export async function hasAnySync(): Promise<boolean> {
 const PORTAL_EXPR = sql<PortalKey>`CASE WHEN ${tickets.productId} IS NULL THEN 'usual' ELSE 'bestseller' END`;
 
 export interface PortalBacklog {
-  /** status = 2 (Open) — unassigned-or-assigned, awaiting the team. */
+  /** status = 2 (Open) — awaiting the team. */
   open: number;
-  /** status = 3 (Freshdesk "Pending"; this account surfaces it as "On hold"). */
+  /** status = 3 (Pending) — waiting on the author to reply. */
   pending: number;
-  /** Any other non-resolved status (custom statuses); UI labels this "Other". */
-  onHold: number;
-  /** open + pending + onHold. */
-  unresolvedTotal: number;
+  /** open + pending — the backlog the team is accountable for. */
+  total: number;
 }
 
 export type BacklogByPortal = Record<PortalKey, PortalBacklog>;
@@ -194,13 +192,13 @@ export type BacklogByPortal = Record<PortalKey, PortalBacklog>;
 const EMPTY_BACKLOG = (): PortalBacklog => ({
   open: 0,
   pending: 0,
-  onHold: 0,
-  unresolvedTotal: 0,
+  total: 0,
 });
 
 /**
- * Current backlog snapshot per portal. Counts every non-resolved, non-spam,
- * non-deleted ticket (status NOT IN 4=Resolved, 5=Closed), bucketed by status.
+ * Current backlog snapshot per portal. Counts ONLY Open (status 2) and
+ * Pending (status 3, waiting on the author) tickets — not Resolved/Closed,
+ * and not any future custom status. Non-spam, non-deleted only.
  */
 export async function getBacklogByPortal(): Promise<BacklogByPortal> {
   const rows = await db
@@ -208,13 +206,12 @@ export async function getBacklogByPortal(): Promise<BacklogByPortal> {
       portal: PORTAL_EXPR,
       open: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} = 2)::int`,
       pending: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} = 3)::int`,
-      onHold: sql<number>`COUNT(*) FILTER (WHERE ${tickets.status} NOT IN (2, 3, 4, 5))::int`,
-      unresolvedTotal: sql<number>`COUNT(*)::int`,
+      total: sql<number>`COUNT(*)::int`,
     })
     .from(tickets)
     .where(
       and(
-        sql`${tickets.status} NOT IN (4, 5)`,
+        sql`${tickets.status} IN (2, 3)`,
         eq(tickets.spam, false),
         eq(tickets.deleted, false)
       )
@@ -229,8 +226,7 @@ export async function getBacklogByPortal(): Promise<BacklogByPortal> {
     out[r.portal] = {
       open: r.open,
       pending: r.pending,
-      onHold: r.onHold,
-      unresolvedTotal: r.unresolvedTotal,
+      total: r.total,
     };
   }
   return out;

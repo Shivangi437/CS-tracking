@@ -108,7 +108,7 @@ export default async function TodayPage({ searchParams }: PageProps) {
                   key={key}
                   label={`${t.label} backlog`}
                   value={owned}
-                  sub={`${b.open} open / ${b.pending} on hold · cap ${t.backlogCap}`}
+                  sub={`${b.open} open / ${b.pending} pending · cap ${t.backlogCap}`}
                   tone={owned > t.backlogCap ? "bad" : "good"}
                 />
               );

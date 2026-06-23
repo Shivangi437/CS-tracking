@@ -57,18 +57,21 @@ export default async function BacklogPage() {
                   {t.label}
                 </h2>
                 <span className="text-xs text-[var(--subtle)]">
-                  {b.unresolvedTotal} unresolved
+                  {b.total} in backlog
                 </span>
               </div>
 
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <StatCard label="Open" value={b.open} />
-                <StatCard label="On hold" value={b.pending} />
-                <StatCard label="Other" value={b.onHold} />
+                <StatCard label="Open" value={b.open} sub="waiting on team" />
+                <StatCard
+                  label="Pending"
+                  value={b.pending}
+                  sub="waiting on author"
+                />
                 <StatCard
                   label="Backlog"
                   value={ownedBacklog}
-                  sub={`Open+On hold · cap ${t.backlogCap}`}
+                  sub={`Open+Pending · cap ${t.backlogCap}`}
                   tone={overCap ? "bad" : "good"}
                 />
                 <StatCard
@@ -90,8 +93,9 @@ export default async function BacklogPage() {
 
       <p className="text-xs text-[var(--subtle)]">
         Usual = Freshdesk &quot;None&quot; product · Bestseller = &quot;bestseller&quot;
-        product. Backlog counts every ticket not yet Resolved or Closed. Targets
-        are tunable in <code>src/lib/config.ts</code>.
+        product. Backlog counts only Open (waiting on the team) + Pending
+        (waiting on the author) tickets. Targets are tunable in{" "}
+        <code>src/lib/config.ts</code>.
       </p>
     </div>
   );
